@@ -1,0 +1,40 @@
+from fastapi import FastAPI, Response, status, HTTPException, Depends, APIRouter
+from sqlalchemy.orm import Session
+from typing import List, Optional
+from sqlalchemy import func
+from .. import models, schemas, oauth2
+from ..database import get_dp
+
+router = APIRouter(
+    prefix="/comment",
+    tags=["Comments"])
+
+@router.post("/",status_code=status.HTTP_201_CREATED,response_model= schemas.CommentOut)
+def create_comment(comment: schemas.CreateComment,db: Session = Depends(get_dp), current_user: int = Depends(oauth2.get_current_user)):
+
+
+    new_comment = models.Comments(user_id=current_user.id, post_id= comment.post_id, comment= comment.comment)
+    db.add(new_comment)
+    db.commit()
+    db.refresh(new_comment)
+    return new_comment
+
+@router.get("/{id}", response_model=List[schemas.CommentOut])
+def get_comments(
+    id: int,  
+    db: Session = Depends(get_dp), 
+    current_user: int = Depends(oauth2.get_current_user)
+):
+    # Prüfen, ob der Post existiert
+    post = db.query(models.Post).filter(models.Post.id == id).first()
+
+    if not post:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, 
+            detail=f"Post with id: {id} was not found"
+        )
+
+    # Kommentare holen
+    comments = db.query(models.Comments).filter(models.Comments.post_id == id).all()
+    
+    return comments

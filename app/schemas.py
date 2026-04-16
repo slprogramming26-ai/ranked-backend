@@ -1,0 +1,79 @@
+from datetime import datetime
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from typing import Optional
+from pydantic.types import conint
+
+class UserOut(BaseModel):
+    id: int
+    email: EmailStr
+    username: str
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+class PostBase(BaseModel):
+    title: str
+    content: str
+    published: bool = True
+    
+
+
+class PostCreate(PostBase):
+    pass 
+
+class Post(PostBase):
+    id: int
+    created_at: datetime
+    owner_id: int
+    owner: UserOut
+    model_config = ConfigDict(from_attributes=True)
+
+class PostOut(BaseModel):
+    post: Post   # ← kleines p
+    votes: int
+
+    model_config = ConfigDict(from_attributes=True)
+
+class UserCreate(BaseModel):
+    email: EmailStr
+    username: str
+    passwort: str
+    
+
+class UserDetails(BaseModel):
+    vibe_factor_1: str
+    vibe_factor_2: str
+
+
+class UserLogin(BaseModel):
+    email: EmailStr
+    passwort: str
+
+
+class Token(BaseModel):
+    access_token : str
+    toke_type : str
+    
+
+class TokenData(BaseModel):
+    id: int
+
+
+class Vote(BaseModel):
+    post_id: int
+    dir: int = Field(le=1)
+
+    
+class CreateComment(BaseModel):
+    post_id: int
+    comment: str
+
+class CommentOut(BaseModel):
+    post_id: int
+    user_id: int
+    comment: str
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+    
