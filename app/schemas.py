@@ -34,6 +34,8 @@ class PostOut(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
+    
+
 class UserCreate(BaseModel):
     email: EmailStr
     username: str
@@ -41,6 +43,12 @@ class UserCreate(BaseModel):
     
 
 class UserDetails(BaseModel):
+    vibe_factor_1: str
+    vibe_factor_2: str
+
+class GetUserOut(BaseModel):
+    email: EmailStr
+    username: str
     vibe_factor_1: str
     vibe_factor_2: str
 

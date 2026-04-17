@@ -40,7 +40,7 @@ def create_user(user: schemas.UserCreate, db: Session = Depends(get_dp)):
     return new_user
 
 
-@router.get("/", response_model=schemas.UserDetails)
+@router.get("/", response_model=schemas.GetUserOut)
 def get_current_user(current_user: int = Depends(oauth2.get_current_user)):
 
     return current_user
