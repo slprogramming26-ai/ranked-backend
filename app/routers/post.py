@@ -36,7 +36,7 @@ s3_client = boto3.client(
 @router.post("/upload")
 async def upload_post_image(file: UploadFile = File(...)):
     # 1. Bild validieren (nur JPEGs/PNGs)
-    if file.content_type not in ["image/jpeg", "image/png"]:
+    if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="Nur Bilder erlaubt!")
 
     # 2. Bild mit Pillow verkleinern (Lerneffekt: Optimierung!)
