@@ -19,6 +19,7 @@ class PostBase(BaseModel):
 
 
 class PostCreate(PostBase):
+    image_url: Optional[str] = None
     pass 
 
 class Post(PostBase):
@@ -27,11 +28,11 @@ class Post(PostBase):
     owner_id: int
     owner: UserOut
     model_config = ConfigDict(from_attributes=True)
+    image_url: Optional[str] = None
 
 class PostOut(BaseModel):
-    post: Post   # ← kleines p
+    post: Post   
     votes: int
-
     model_config = ConfigDict(from_attributes=True)
 
 

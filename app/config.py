@@ -10,6 +10,10 @@ class Settings(BaseSettings):
     secret_key: str
     algorithm: str
     access_token_expire_minutes: int
+    s3_access_key: str
+    s3_secret_key: str
+    s3_region: str
+    s3_endpoint: str
 
     model_config = ConfigDict(env_file=".env")
 

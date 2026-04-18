@@ -1,7 +1,10 @@
-from fastapi import FastAPI, Response, status, HTTPException, Depends, APIRouter
+from fastapi import FastAPI, Response, status, HTTPException, Depends, APIRouter, UploadFile, File
 from sqlalchemy.orm import Session
 from typing import List, Optional
-
+from PIL import Image
+import io
+import boto3
+from ..config import settings
 
 from sqlalchemy import func
 from .. import models, schemas, oauth2
@@ -11,6 +14,61 @@ router = APIRouter(
     prefix="/posts",
     tags=['Posts']
 )
+
+
+
+
+S3_ENDPOINT = f'{settings.s3_endpoint}'
+S3_ACCESS_KEY = f'{settings.s3_access_key}'
+S3_SECRET_KEY = f'{settings.s3_secret_key}'
+BUCKET_NAME = 'post_images'
+
+s3_client = boto3.client(
+    's3',
+    endpoint_url=f"{S3_ENDPOINT}", # Wichtig: s3 Pfad anhängen
+    aws_access_key_id=S3_ACCESS_KEY,
+    aws_secret_access_key=S3_SECRET_KEY
+)
+
+
+
+
+@router.post("/upload")
+async def upload_post_image(file: UploadFile = File(...)):
+    # 1. Bild validieren (nur JPEGs/PNGs)
+    if file.content_type not in ["image/jpeg", "image/png"]:
+        raise HTTPException(status_code=400, detail="Nur Bilder erlaubt!")
+
+    # 2. Bild mit Pillow verkleinern (Lerneffekt: Optimierung!)
+    image_data = await file.read()
+    img = Image.open(io.BytesIO(image_data))
+    
+    # Resize auf max 1024px Breite (Proportional)
+    img.thumbnail((1024, 1024))
+    
+    # In Byte-Stream zurückverwandeln
+    buffer = io.BytesIO()
+    img.save(buffer, format="JPEG", quality=85) # Kompression spart Platz!
+    buffer.seek(0)
+
+    # 3. Zu Supabase hochladen
+    file_name = f"posts/{file.filename}"
+    try:
+        s3_client.upload_fileobj(buffer, BUCKET_NAME, file_name, ExtraArgs={'ACL': 'public-read', 'ContentType': 'image/jpeg'})
+        
+        # Die fertige URL für die Datenbank generieren
+        url = f"{S3_ENDPOINT}/storage/v1/object/public/{BUCKET_NAME}/{file_name}"
+        return {"image_url": url}
+    except Exception as e:
+        print(e)
+        raise HTTPException(status_code=500, detail="Upload fehlgeschlagen")
+    
+
+
+
+
+
+
 
 @router.get("/", response_model=List[schemas.PostOut])
 def get_posts(db: Session = Depends(get_dp), current_user: int = Depends(oauth2.get_current_user), limit: int = 10, skip: int = 0, search: Optional[str] = ""):
