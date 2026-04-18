@@ -34,38 +34,58 @@ s3_client = boto3.client(
 
 
 @router.post("/upload")
-async def upload_post_image(file: UploadFile = File(...), current_user: int = Depends(oauth2.get_current_user)):
+async def upload_post_image(
+    file: UploadFile = File(...), 
+    current_user: int = Depends(oauth2.get_current_user)
+):
+    # 1. Dateigröße prüfen (max 5MB)
+    MAX_SIZE = 5 * 1024 * 1024
+    contents = await file.read(MAX_SIZE + 1)
+    if len(contents) > MAX_SIZE:
+        raise HTTPException(status_code=400, detail="Datei zu groß! Max 5MB.")
 
-    #print(f"Content-Type: {file.content_type}")  # NEU
-    #print(f"Filename: {file.filename}")
+    # 2. Content-Type prüfen
+    # Hinweis: Wenn Flutter den Content-Type nicht sendet, 
+    # wird dieser Check wieder fehlschlagen (Error 400).
+    if not file.content_type or not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Nur Bilder erlaubt!")
 
-    # 1. Bild validieren (nur JPEGs/PNGs)
-    #if not file.content_type or not file.content_type.startswith("image/"):
-    #    raise HTTPException(status_code=400, detail="Nur Bilder erlaubt!")
-
-    # 2. Bild mit Pillow verkleinern (Lerneffekt: Optimierung!)
-    image_data = await file.read()
-    img = Image.open(io.BytesIO(image_data))
-    
-    # Resize auf max 1024px Breite (Proportional)
-    img.thumbnail((1024, 1024))
-    
-    # In Byte-Stream zurückverwandeln
-    buffer = io.BytesIO()
-    img.save(buffer, format="JPEG", quality=85) # Kompression spart Platz!
-    buffer.seek(0)
-
-    # 3. Zu Supabase hochladen
-    file_name = f"posts/{file.filename}"
     try:
-        s3_client.upload_fileobj(buffer, BUCKET_NAME, file_name, ExtraArgs={'ACL': 'public-read', 'ContentType': 'image/jpeg'})
+        # 3. Pillow Verarbeitung
+        img = Image.open(io.BytesIO(contents))
+        img.verify() # Validieren
         
-        # Die fertige URL für die Datenbank generieren
+        # Nach verify() muss das Objekt neu geladen werden
+        img = Image.open(io.BytesIO(contents))
+
+        # Decompression Bomb Schutz
+        if img.width * img.height > 20_000_000:
+            raise HTTPException(status_code=400, detail="Bild hat zu viele Pixel!")
+
+        # 4. Resize & Kompression
+        img.thumbnail((1024, 1024))
+        if img.mode in ("RGBA", "P"): # Transparent-Support zu RGB konvertieren
+            img = img.convert("RGB")
+            
+        buffer = io.BytesIO()
+        img.save(buffer, format="JPEG", quality=85)
+        buffer.seek(0)
+
+        # 5. Upload zu Supabase
+        file_name = f"posts/{file.filename}"
+        s3_client.upload_fileobj(
+            buffer, 
+            BUCKET_NAME, 
+            file_name, 
+            ExtraArgs={'ACL': 'public-read', 'ContentType': 'image/jpeg'}
+        )
+
         url = f"{S3_ENDPOINT}/storage/v1/object/public/{BUCKET_NAME}/{file_name}"
         return {"image_url": url}
+
     except Exception as e:
-        print(e)
-        raise HTTPException(status_code=500, detail="Upload fehlgeschlagen")
+        print(f"Fehler beim Upload: {e}")
+        raise HTTPException(status_code=500, detail="Bildverarbeitung fehlgeschlagen.")
     
 
 
