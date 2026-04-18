@@ -36,12 +36,12 @@ s3_client = boto3.client(
 @router.post("/upload")
 async def upload_post_image(file: UploadFile = File(...), current_user: int = Depends(oauth2.get_current_user)):
 
-    print(f"Content-Type: {file.content_type}")  # NEU
-    print(f"Filename: {file.filename}")
+    #print(f"Content-Type: {file.content_type}")  # NEU
+    #print(f"Filename: {file.filename}")
 
     # 1. Bild validieren (nur JPEGs/PNGs)
-    if not file.content_type or not file.content_type.startswith("image/"):
-        raise HTTPException(status_code=400, detail="Nur Bilder erlaubt!")
+    #if not file.content_type or not file.content_type.startswith("image/"):
+    #    raise HTTPException(status_code=400, detail="Nur Bilder erlaubt!")
 
     # 2. Bild mit Pillow verkleinern (Lerneffekt: Optimierung!)
     image_data = await file.read()
