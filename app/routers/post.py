@@ -34,7 +34,11 @@ s3_client = boto3.client(
 
 
 @router.post("/upload")
-async def upload_post_image(file: UploadFile = File(...)):
+async def upload_post_image(file: UploadFile = File(...), current_user: int = Depends(oauth2.get_current_user)):
+
+    print(f"Content-Type: {file.content_type}")  # NEU
+    print(f"Filename: {file.filename}")
+
     # 1. Bild validieren (nur JPEGs/PNGs)
     if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="Nur Bilder erlaubt!")
@@ -91,7 +95,7 @@ def create_posts(post: schemas.PostCreate, db: Session = Depends(get_dp), curren
     db.refresh(new_post)
     return new_post
 
-router.get("/{id}", response_model=schemas.PostOut)
+@router.get("/{id}", response_model=schemas.PostOut)
 def get_post(id: int, response: Response, db: Session = Depends(get_dp), response_model=schemas.Post, current_user: int = Depends(oauth2.get_current_user)):
 #    curser.execute("""SELECT * FROM posts WHERE id = %s""", (str(id),))
 #    post = curser.fetchone()
