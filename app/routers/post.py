@@ -40,6 +40,7 @@ async def upload_post_image(
 ):
     # 1. Dateigröße prüfen (max 5MB)
     MAX_SIZE = 5 * 1024 * 1024
+    print(f"Content-Type von Flutter: '{file.content_type}'") 
     contents = await file.read(MAX_SIZE + 1)
     if len(contents) > MAX_SIZE:
         raise HTTPException(status_code=400, detail="Datei zu groß! Max 5MB.")
