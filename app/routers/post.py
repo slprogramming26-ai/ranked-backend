@@ -81,7 +81,7 @@ async def upload_post_image(
             ExtraArgs={'ACL': 'public-read', 'ContentType': 'image/jpeg'}
         )
 
-        url = f"{S3_ENDPOINT}/{BUCKET_NAME}/{file_name}"
+        url = f"https://yrnrhjvauknhlotoqpea.supabase.co/storage/v1/object/public/{BUCKET_NAME}/{file_name}"
         return {"image_url": url}
 
     except Exception as e:
