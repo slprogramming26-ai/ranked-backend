@@ -40,4 +40,4 @@ def get_comments(
     .filter(models.Comments.post_id == id)\
     .all()
     
-    return [{"comment": comment, "username": username} for comment, username in comments]
+    return [{"comment": comment.comment, "username": username, "post_id": comment.post_id} for comment, username in comments]
