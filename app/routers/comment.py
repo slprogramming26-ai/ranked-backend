@@ -35,6 +35,9 @@ def get_comments(
         )
 
     # Kommentare holen
-    comments = db.query(models.Comments).filter(models.Comments.post_id == id).all()
+    comments = db.query(models.Comments, models.User.username)\
+    .join(models.User, models.User.id == models.Comments.user_id)\
+    .filter(models.Comments.post_id == id)\
+    .all()
     
-    return comments
+    return [{"comment": comment, "username": username} for comment, username in comments]

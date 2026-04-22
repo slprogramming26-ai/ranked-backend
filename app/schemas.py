@@ -74,14 +74,18 @@ class Vote(BaseModel):
     post_id: int
     dir: int = Field(le=1)
 
-    
-class CreateComment(BaseModel):
+class CommentBase(BaseModel):
     post_id: int
     comment: str
 
+
+    
+class CreateComment(CommentBase):
+    pass
+
 class CommentOut(BaseModel):
+    username: str
     post_id: int
-    user_id: int
     comment: str
 
     model_config = ConfigDict(from_attributes=True)
