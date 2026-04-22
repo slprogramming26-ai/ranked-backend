@@ -1,7 +1,10 @@
-from fastapi import FastAPI, Response, status, HTTPException, Depends, APIRouter
+from fastapi import FastAPI, Response, status, HTTPException, Depends, APIRouter, UploadFile, File
 from sqlalchemy.orm import Session
 from typing import List, Optional
-
+from PIL import Image
+import io
+import boto3
+from ..config import settings
 
 from sqlalchemy import func
 from .. import models, schemas, oauth2,utils
@@ -12,6 +15,80 @@ router = APIRouter(
     prefix="/users",
     tags=['Users']
 )
+
+
+S3_ENDPOINT = f'{settings.s3_endpoint}'
+S3_ACCESS_KEY = f'{settings.s3_access_key}'
+S3_SECRET_KEY = f'{settings.s3_secret_key}'
+BUCKET_NAME = 'user_images'
+
+s3_client = boto3.client(
+    's3',
+    endpoint_url=f"{S3_ENDPOINT}", # Wichtig: s3 Pfad anhängen
+    aws_access_key_id=S3_ACCESS_KEY,
+    aws_secret_access_key=S3_SECRET_KEY
+)
+
+
+
+
+@router.post("/upload")
+async def upload_user_image(
+    file: UploadFile = File(...), 
+    current_user: int = Depends(oauth2.get_current_user)
+):
+    # 1. Dateigröße prüfen (max 5MB)
+    MAX_SIZE = 5 * 1024 * 1024
+    print(f"Content-Type von Flutter: '{file.content_type}'") 
+    contents = await file.read(MAX_SIZE + 1)
+    if len(contents) > MAX_SIZE:
+        raise HTTPException(status_code=400, detail="Datei zu groß! Max 5MB.")
+
+    # 2. Content-Type prüfen
+    # Hinweis: Wenn Flutter den Content-Type nicht sendet, 
+    # wird dieser Check wieder fehlschlagen (Error 400).
+    if not file.content_type or not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Nur Bilder erlaubt!")
+
+    try:
+        # 3. Pillow Verarbeitung
+        img = Image.open(io.BytesIO(contents))
+        img.verify() # Validieren
+        
+        # Nach verify() muss das Objekt neu geladen werden
+        img = Image.open(io.BytesIO(contents))
+
+        # Decompression Bomb Schutz
+        if img.width * img.height > 20_000_000:
+            raise HTTPException(status_code=400, detail="Bild hat zu viele Pixel!")
+
+        # 4. Resize & Kompression
+        img.thumbnail((1024, 1024))
+        if img.mode in ("RGBA", "P"): # Transparent-Support zu RGB konvertieren
+            img = img.convert("RGB")
+            
+        buffer = io.BytesIO()
+        img.save(buffer, format="JPEG", quality=85)
+        buffer.seek(0)
+
+        # 5. Upload zu Supabase
+        file_name = f"posts/{file.filename}"
+        s3_client.upload_fileobj(
+            buffer, 
+            BUCKET_NAME, 
+            file_name, 
+            ExtraArgs={'ACL': 'public-read', 'ContentType': 'image/jpeg'}
+        )
+
+        url = f"https://yrnrhjvauknhlotoqpea.supabase.co/storage/v1/object/public/{BUCKET_NAME}/{file_name}"
+        return {"image_url": url}
+
+    except Exception as e:
+        print(f"Fehler beim Upload: {e}")
+        raise HTTPException(status_code=500, detail="Bildverarbeitung fehlgeschlagen.")
+    
+
+
 
 @router.post("/", status_code=status.HTTP_201_CREATED, response_model=schemas.UserOut)
 def create_user(user: schemas.UserCreate, db: Session = Depends(get_dp)):

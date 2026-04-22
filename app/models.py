@@ -30,6 +30,10 @@ class User(Base):
     created_at = Column(TIMESTAMP(timezone=True), nullable= False, server_default= text('now()'))
     vibe_factor_1 = Column(String, nullable= True)
     vibe_factor_2 = Column(String, nullable= True)
+    biography = Column(String, nullable= True)
+    favorite_animal = Column(String, nullable= True)
+    favorite_snack = Column(String, nullable= True)
+    ideal_weekend = Column(String, nullable= True)
 
 
 class Votes(Base):
