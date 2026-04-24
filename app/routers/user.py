@@ -72,7 +72,7 @@ async def upload_user_image(
         buffer.seek(0)
 
         # 5. Upload zu Supabase
-        file_name = f"posts/{file.filename}"
+        file_name = f"users/{file.filename}"
         s3_client.upload_fileobj(
             buffer, 
             BUCKET_NAME, 
