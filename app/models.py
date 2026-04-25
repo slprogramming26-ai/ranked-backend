@@ -34,6 +34,7 @@ class User(Base):
     favorite_animal = Column(String, nullable= True)
     favorite_snack = Column(String, nullable= True)
     ideal_weekend = Column(String, nullable= True)
+    profile_picture_url = Column(String, nullable= True)
 
 
 class Votes(Base):

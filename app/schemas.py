@@ -46,12 +46,16 @@ class UserCreate(BaseModel):
 class UserDetails(BaseModel):
     vibe_factor_1: str
     vibe_factor_2: str
+    image_url: Optional[str] = None
+    biography: str
 
 class GetUserOut(BaseModel):
     email: EmailStr
     username: str
     vibe_factor_1: Optional[str] = None 
     vibe_factor_2: Optional[str] = None
+    image_url: Optional[str] = None
+    biography: str
 
     model_config = ConfigDict(from_attributes=True)
 

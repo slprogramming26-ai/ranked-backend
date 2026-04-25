@@ -1,8 +1,8 @@
-"""add favorite_snack,animal,weekend
+"""add profile_pics and more user details
 
-Revision ID: 534e11989c36
+Revision ID: e0c76bcda394
 Revises: c6f5e7dea003
-Create Date: 2026-04-22 16:20:59.699097
+Create Date: 2026-04-25 18:20:58.814974
 
 """
 from typing import Sequence, Union
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = '534e11989c36'
+revision: str = 'e0c76bcda394'
 down_revision: Union[str, Sequence[str], None] = 'c6f5e7dea003'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
