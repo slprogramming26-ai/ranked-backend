@@ -37,6 +37,11 @@ class PostOut(BaseModel):
 
 
 
+
+
+
+
+
 class UserCreate(BaseModel):
     email: EmailStr
     username: str
@@ -65,6 +70,11 @@ class UserLogin(BaseModel):
     passwort: str
 
 
+
+
+
+
+
 class Token(BaseModel):
     access_token : str
     toke_type : str
@@ -74,14 +84,25 @@ class TokenData(BaseModel):
     id: int
 
 
+
+
+
+
 class Vote(BaseModel):
     post_id: int
     dir: int = Field(le=1)
 
+
+
+
+
+
+
+
+
 class CommentBase(BaseModel):
     post_id: int
     comment: str
-
 
     
 class CreateComment(CommentBase):
@@ -95,4 +116,26 @@ class CommentOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+
+class RankingScore(BaseModel):
+    id: int
+    voter_id: int
+    target_user_id: int
+    
+    
+    productivity_rating: int = Field(le=10)
+    engagement_rating: int = Field(le=10)
+    creativity_rating: int = Field(le=10)
+    
+    created_at = datetime
+
+class RankingScoreOut(BaseModel):
+    voter_id: int
+    target_user_id: int
+    productivity_rating: int
+    engagement_rating: int
+    creativity_rating: int
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
     
