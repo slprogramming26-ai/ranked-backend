@@ -123,9 +123,9 @@ class RankingScore(BaseModel):
     target_user_id: int
     
     
-    productivity_rating: int = Field(le=10)
-    engagement_rating: int = Field(le=10)
-    creativity_rating: int = Field(le=10)
+    productivity_rating: int = Field(ge=1, le=10) 
+    engagement_rating: int = Field(ge=1, le=10)   
+    creativity_rating: int = Field(ge=1, le=10)
     
     created_at = datetime
 
