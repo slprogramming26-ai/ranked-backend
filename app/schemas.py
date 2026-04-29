@@ -127,7 +127,7 @@ class RankingScore(BaseModel):
     engagement_rating: int = Field(ge=1, le=10)   
     creativity_rating: int = Field(ge=1, le=10)
     
-    created_at = datetime
+    created_at : datetime
 
 class RankingScoreOut(BaseModel):
     voter_id: int
