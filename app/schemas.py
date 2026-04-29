@@ -8,6 +8,7 @@ class UserOut(BaseModel):
     email: EmailStr
     username: str
     created_at: datetime
+    ranking_enabled: bool
 
     model_config = ConfigDict(from_attributes=True)
 
