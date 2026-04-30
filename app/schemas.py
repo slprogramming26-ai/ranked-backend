@@ -54,7 +54,7 @@ class UserDetails(BaseModel):
     vibe_factor_2: Optional[str]
     profile_picture_url: Optional[str] = None 
     biography: Optional[str]
-    ranking_enabled: Optional[str]
+    ranking_enabled: Optional[bool]
 
 class GetUserOut(BaseModel):
     email: EmailStr
