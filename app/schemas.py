@@ -63,6 +63,7 @@ class GetUserOut(BaseModel):
     vibe_factor_2: Optional[str] = None
     profile_picture_url: Optional[str] = None 
     biography: str
+    ranking_enabled: bool
 
     model_config = ConfigDict(from_attributes=True)
 
