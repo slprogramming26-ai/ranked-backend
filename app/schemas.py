@@ -50,10 +50,10 @@ class UserCreate(BaseModel):
     
 
 class UserDetails(BaseModel):
-    vibe_factor_1: str
-    vibe_factor_2: str
+    vibe_factor_1: Optional[str]
+    vibe_factor_2: Optional[str]
     profile_picture_url: Optional[str] = None 
-    biography: str
+    biography: Optional[str]
     ranking_enabled: Optional[str]
 
 class GetUserOut(BaseModel):
