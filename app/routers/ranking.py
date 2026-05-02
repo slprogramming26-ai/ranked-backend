@@ -79,8 +79,8 @@ def daily_ranking_score(
     return new_daily_rank
 
 
-@router.get("/all_week_posts", response_model=List[schemas.PostOut])
-def get_all_week_posts(target_user_id: int, db: Session = Depends(get_dp)):
+@router.get("/all_week_posts/{target_user_id}", response_model=List[schemas.PostOut])
+def get_all_week_posts(target_user_id: int, db: Session = Depends(get_dp), current_user: models.User = Depends(oauth2.get_current_user)):
     
     # 1. Zeitfenster berechnen (Jetzt minus 7 Tage)
     one_week_ago = datetime.now(timezone.utc) - timedelta(days=7)
