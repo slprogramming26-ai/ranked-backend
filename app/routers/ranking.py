@@ -60,7 +60,7 @@ def get_personal_target(db: Session = Depends(get_dp), current_user: models.User
     return random_target
 
 
-@router.post("/daily_ranking_score", response_model=schemas.RankingScoreOut)
+@router.post("/daily_ranking_score", response_model=schemas.RankingScoreOut, status_code=status.HTTP_201_CREATED)
 def daily_ranking_score(
     ranking_score: schemas.RankingScoreCreate,
     db: Session = Depends(get_dp), 
