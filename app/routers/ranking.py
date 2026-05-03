@@ -62,19 +62,19 @@ def get_personal_target(db: Session = Depends(get_dp), current_user: models.User
 
 @router.post("/daily_ranking_score", response_model=schemas.RankingScoreOut)
 def daily_ranking_score(
-    ranking_score: schemas.RankingScore, 
+    ranking_score: schemas.RankingScoreCreate,
     db: Session = Depends(get_dp), 
     current_user: models.User = Depends(oauth2.get_current_user)
 ):
-    # Sicherheit: Sicherstellen, dass der voter_id der eingeloggte User ist
+    
     new_daily_rank = models.RankingScores(
-        **ranking_score.dict(exclude={'voter_id'}), # voter_id vom Token nehmen
+        **ranking_score.dict(exclude={'voter_id'}), 
         voter_id=current_user.id
     )
 
     db.add(new_daily_rank)
-    db.commit() # Klammern waren wichtig!
-    db.refresh(new_daily_rank)
+    db.commit() 
+    db.refresh(new_daily_rank) 
     
     return new_daily_rank
 

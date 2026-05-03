@@ -141,4 +141,11 @@ class RankingScoreOut(BaseModel):
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+class RankingScoreCreate(BaseModel):
+    target_user_id: int
     
+    
+    productivity_rating: int = Field(ge=1, le=100) 
+    engagement_rating: int = Field(ge=1, le=100)   
+    creativity_rating: int = Field(ge=1, le=100)
