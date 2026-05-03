@@ -31,9 +31,6 @@ class User(Base):
     vibe_factor_1 = Column(String, nullable= True)
     vibe_factor_2 = Column(String, nullable= True)
     biography = Column(String, nullable= True)
-    favorite_animal = Column(String, nullable= True)
-    favorite_snack = Column(String, nullable= True)
-    ideal_weekend = Column(String, nullable= True)
     profile_picture_url = Column(String, nullable= True)
     ranking_enabled = Column(Boolean, server_default='False', nullable=False)
 
