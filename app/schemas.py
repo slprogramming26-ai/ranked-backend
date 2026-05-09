@@ -9,6 +9,7 @@ class UserOut(BaseModel):
     username: str
     created_at: datetime
     ranking_enabled: bool
+    profile_picture_url: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -64,7 +65,7 @@ class GetUserOut(BaseModel):
     profile_picture_url: Optional[str] = None 
     biography: str
     ranking_enabled: bool
-
+ 
     model_config = ConfigDict(from_attributes=True)
 
 
