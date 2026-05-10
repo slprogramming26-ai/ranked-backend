@@ -47,6 +47,8 @@ async def upload_user_image(
 
     # 2. Content-Type prüfen
     content_type = (file.content_type or "").strip()
+    print(f"Stripped content_type: '{content_type}'")  # <-- neu
+    print(f"Starts with image/: {content_type.startswith('image/')}")
     if not content_type or not content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="Nur Bilder erlaubt!")
 
