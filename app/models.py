@@ -61,6 +61,9 @@ class DailyTarget(Base):
     voter_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False) # Wer schaut?
     target_user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False) # Wer wird bewertet?
     date = Column(DATE, nullable=False, server_default=text('now()'))
+    
+    voter = relationship("User", foreign_keys=[voter_id])
+    target_user = relationship("User", foreign_keys=[target_user_id])
 
 
 class RankingScores(Base):
