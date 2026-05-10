@@ -39,7 +39,7 @@ async def upload_post_image(
     current_user: int = Depends(oauth2.get_current_user)
 ):
     # 1. Dateigröße prüfen (max 5MB)
-    MAX_SIZE = 5 * 1024 * 1024
+    MAX_SIZE = 15 * 1024 * 1024
     print(f"Content-Type von Flutter: '{file.content_type}'") 
     contents = await file.read(MAX_SIZE + 1)
     if len(contents) > MAX_SIZE:

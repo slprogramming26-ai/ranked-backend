@@ -37,7 +37,7 @@ async def upload_user_image(
     file: UploadFile = File(...), 
     current_user: int = Depends(oauth2.get_current_user)
 ):
-    MAX_SIZE = 5 * 1024 * 1024
+    MAX_SIZE = 15 * 1024 * 1024
     print(f"Content-Type von Flutter: '{file.content_type}'")
 
     # 1. Einmal lesen
@@ -47,8 +47,6 @@ async def upload_user_image(
 
     # 2. Content-Type prüfen
     content_type = (file.content_type or "").strip()
-    print(f"Stripped content_type: '{content_type}'")  # <-- neu
-    print(f"Starts with image/: {content_type.startswith('image/')}")
     if not content_type or not content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="Nur Bilder erlaubt!")
 
