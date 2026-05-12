@@ -9,7 +9,7 @@ from ..config import settings
 from sqlalchemy import func
 from .. import models, schemas, oauth2
 from ..database import get_dp
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, date
 
 
 router = APIRouter(
@@ -69,7 +69,7 @@ def daily_ranking_score(
     already_rated = db.query(models.RankingScores).filter(
     models.RankingScores.voter_id == current_user.id,
     models.RankingScores.target_user_id == ranking_score.target_user_id,
-    func.date(models.RankingScores.created_at) == datetime.date.today()
+    func.date(models.RankingScores.created_at) == date.today()
     ).first()
 
     if already_rated:
