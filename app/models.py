@@ -78,6 +78,7 @@ class RankingScores(Base):
     productivity_rating = Column(Integer, nullable=False) # 1-10
     engagement_rating = Column(Integer, nullable=False)   # 1-10
     creativity_rating = Column(Integer, nullable=False)
+
     
     created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text('now()'))
 

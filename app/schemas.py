@@ -150,3 +150,14 @@ class RankingScoreCreate(BaseModel):
     productivity_rating: int = Field(ge=1, le=100) 
     engagement_rating: int = Field(ge=1, le=100)   
     creativity_rating: int = Field(ge=1, le=100)
+
+
+class LeaderboardEntry(BaseModel):
+    target_user_id: int
+    username: str
+    profile_picture_url: Optional[str] = None
+    avg_productivity: float
+    avg_creativity: float
+    avg_engagement: float
+    total_ratings: int
+    model_config = ConfigDict(from_attributes=True)

@@ -51,7 +51,6 @@ def get_personal_target(db: Session = Depends(get_dp), current_user: models.User
             status_code=status.HTTP_404_NOT_FOUND, 
             detail="Aktuell sind keine anderen Teilnehmer für das Ranking verfügbar."
         )
-
     # 4. Match speichern
     new_match = models.DailyTarget(voter_id=current_user.id, target_user_id=random_target.id)
     db.add(new_match)
@@ -66,11 +65,22 @@ def daily_ranking_score(
     db: Session = Depends(get_dp), 
     current_user: models.User = Depends(oauth2.get_current_user)
 ):
+    # ranking.py — vor dem Speichern:
+    already_rated = db.query(models.RankingScores).filter(
+    models.RankingScores.voter_id == current_user.id,
+    models.RankingScores.target_user_id == ranking_score.target_user_id,
+    func.date(models.RankingScores.created_at) == datetime.date.today()
+    ).first()
+
+    if already_rated:
+        raise HTTPException(status_code=400, detail="Du hast heute schon bewertet.")
+
     
     new_daily_rank = models.RankingScores(
         **ranking_score.dict(exclude={'voter_id'}), 
         voter_id=current_user.id
     )
+
 
     db.add(new_daily_rank)
     db.commit() 
@@ -98,5 +108,41 @@ def get_all_week_posts(target_user_id: int, db: Session = Depends(get_dp), curre
 
     return [{"post": post, "votes": votes} for post, votes in all_week_posts]
 
+
+@router.get("/leaderboard", response_model=List[schemas.LeaderboardEntry])
+def get_leaderboard(db: Session = Depends(get_dp), current_user: models.User = Depends(oauth2.get_current_user)):
+    today = datetime.now(timezone.utc).date()
+
+    scores = db.query(
+        models.RankingScores.target_user_id,
+        models.User.username,
+        models.User.profile_picture_url,
+        func.avg(models.RankingScores.productivity_rating).label("avg_productivity"),
+        func.avg(models.RankingScores.creativity_rating).label("avg_creativity"),
+        func.avg(models.RankingScores.engagement_rating).label("avg_engagement"),
+        func.count(models.RankingScores.id).label("total_ratings")
+    ).join(models.User, models.User.id == models.RankingScores.target_user_id) \
+     .filter(func.date(models.RankingScores.created_at) == today) \
+     .group_by(models.RankingScores.target_user_id, models.User.username, models.User.profile_picture_url) \
+     .order_by(func.avg(
+         models.RankingScores.productivity_rating +
+         models.RankingScores.creativity_rating +
+         models.RankingScores.engagement_rating
+     ).desc()) \
+     .limit(7) \
+     .all()
+
+    return [
+        {
+            "target_user_id": row.target_user_id,
+            "username": row.username,
+            "profile_picture_url": row.profile_picture_url,
+            "avg_productivity": row.avg_productivity,
+            "avg_creativity": row.avg_creativity,
+            "avg_engagement": row.avg_engagement,
+            "total_ratings": row.total_ratings,
+        }
+        for row in scores
+    ]
 
 
