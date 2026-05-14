@@ -17,7 +17,7 @@ def create_comment(comment: schemas.CreateComment,db: Session = Depends(get_dp),
     db.add(new_comment)
     db.commit()
     db.refresh(new_comment)
-    return new_comment
+    return {'comment': new_comment.comment, 'username': current_user.username, 'post_id': new_comment.post_id}
 
 @router.get("/{id}", response_model=List[schemas.CommentOut])
 def get_comments(
