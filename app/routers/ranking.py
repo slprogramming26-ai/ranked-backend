@@ -28,6 +28,14 @@ def get_personal_target(db: Session = Depends(get_dp), current_user: models.User
             status_code=status.HTTP_403_FORBIDDEN, 
             detail="Du musst selbst am Ranking teilnehmen, um andere bewerten zu können."
         )
+    
+    already_rated = db.query(models.RankingScores).filter(
+    models.RankingScores.voter_id == current_user.id,
+    func.date(models.RankingScores.created_at) == date.today()
+    ).first()
+
+    if already_rated:
+        raise HTTPException(status_code=400, detail="Du hast heute schon bewertet.")
 
     # 2. Bestehendes Match für heute suchen
     existing_match = db.query(models.DailyTarget).filter(
@@ -66,9 +74,7 @@ def daily_ranking_score(
     current_user: models.User = Depends(oauth2.get_current_user)
 ):
     # ranking.py — vor dem Speichern:
-    
-
-    
+  
     new_daily_rank = models.RankingScores(
         **ranking_score.dict(exclude={'voter_id'}), 
         voter_id=current_user.id
@@ -85,14 +91,7 @@ def daily_ranking_score(
 @router.get("/all_week_posts/{target_user_id}", response_model=List[schemas.PostOut])
 def get_all_week_posts(target_user_id: int, db: Session = Depends(get_dp), current_user: models.User = Depends(oauth2.get_current_user)):
 
-    already_rated = db.query(models.RankingScores).filter(
-    models.RankingScores.voter_id == current_user.id,
-    models.RankingScores.target_user_id == target_user_id,
-    func.date(models.RankingScores.created_at) == date.today()
-    ).first()
-
-    if already_rated:
-        raise HTTPException(status_code=400, detail="Du hast heute schon bewertet.")
+    
     
     # 1. Zeitfenster berechnen (Jetzt minus 7 Tage)
     one_week_ago = datetime.now(timezone.utc) - timedelta(days=7)
