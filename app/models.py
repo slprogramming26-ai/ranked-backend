@@ -15,6 +15,7 @@ class Post(Base):
     created_at = Column(TIMESTAMP(timezone=True), nullable= False, server_default= text('now()'))
     owner_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable = False )
     image_url = Column(String, nullable=True)
+    category = Column(String, nullable= True)
 
     owner = relationship("User")
 

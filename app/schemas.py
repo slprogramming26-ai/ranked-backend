@@ -22,6 +22,7 @@ class PostBase(BaseModel):
 
 class PostCreate(PostBase):
     image_url: Optional[str] = None
+    category: Optional[str] = None
     pass 
 
 class Post(PostBase):
@@ -31,6 +32,7 @@ class Post(PostBase):
     owner: UserOut
     model_config = ConfigDict(from_attributes=True)
     image_url: Optional[str] = None
+    category: Optional[str] = None
 
 class PostOut(BaseModel):
     post: Post   
