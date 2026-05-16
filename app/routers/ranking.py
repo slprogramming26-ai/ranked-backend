@@ -19,8 +19,7 @@ router = APIRouter(
 
 @router.get("/my_target", response_model=schemas.UserOut)
 def get_personal_target(db: Session = Depends(get_dp), current_user: models.User = Depends(oauth2.get_current_user)):
-    import datetime
-    today = datetime.date.today()
+    today = date.today()
 
     # 1. Prüfen: Hat der User selbst Ranking aktiviert?
     if not current_user.ranking_enabled:
