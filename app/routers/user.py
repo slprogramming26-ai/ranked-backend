@@ -114,9 +114,19 @@ def create_user(user: schemas.UserCreate, db: Session = Depends(get_dp)):
 
 
 @router.get("/", response_model=schemas.GetUserOut)
-def get_current_user(current_user: int = Depends(oauth2.get_current_user)):
+def get_current_user(current_user: int = Depends(oauth2.get_current_user),  db: Session = Depends(get_dp)):
 
-    return current_user
+    follower_count = db.query(models.Follows).filter(models.Follows.followee_id == current_user.id).count()
+
+    return {"email": current_user.email,
+            "username": current_user.username,
+            "vibe_factor_1": current_user.vibe_factor_1,
+            "vibe_factor_2": current_user.vibe_factor_2,
+            "profile_picture_url": current_user.profile_picture_url,
+            "biography": current_user.biography,
+            "ranking_enabled": current_user.ranking_enabled,
+            "follower_count": follower_count
+            }
 
 
 @router.put("/")

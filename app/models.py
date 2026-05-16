@@ -83,4 +83,10 @@ class RankingScores(Base):
     
     created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text('now()'))
 
-    
+
+class Follows(Base):
+
+    __tablename__ = 'follows'
+
+    follower_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False,  primary_key= True)
+    followee_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False,  primary_key= True)

@@ -65,8 +65,9 @@ class GetUserOut(BaseModel):
     vibe_factor_1: Optional[str] = None 
     vibe_factor_2: Optional[str] = None
     profile_picture_url: Optional[str] = None 
-    biography: str
+    biography: Optional[str] = None
     ranking_enabled: bool
+    follower_count: int
  
     model_config = ConfigDict(from_attributes=True)
 
@@ -97,6 +98,12 @@ class TokenData(BaseModel):
 class Vote(BaseModel):
     post_id: int
     dir: int = Field(le=1)
+
+
+class Follow(BaseModel):
+    followee_id: int
+    dir: int = Field(le=1)
+    
 
 
 
@@ -163,3 +170,5 @@ class LeaderboardEntry(BaseModel):
     avg_engagement: float
     total_ratings: int
     model_config = ConfigDict(from_attributes=True)
+
+

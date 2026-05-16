@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from . import models
 from .database import engine
-from .routers import post, user, auth, vote, comment,ranking
+from .routers import post, user, auth, vote, comment,ranking, follow
 from fastapi.middleware.cors import CORSMiddleware
 
 
@@ -23,6 +23,7 @@ app.include_router(auth.router)
 app.include_router(vote.router)
 app.include_router(comment.router)
 app.include_router(ranking.router)
+app.include_router(follow.router)
 
 # models.Base.metadata.create_all(bind=engine)
 
