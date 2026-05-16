@@ -29,6 +29,8 @@ def get_personal_target(db: Session = Depends(get_dp), current_user: models.User
             detail="Du musst selbst am Ranking teilnehmen, um andere bewerten zu können."
         )
     
+
+    
     already_rated = db.query(models.RankingScores).filter(
     models.RankingScores.voter_id == current_user.id,
     func.date(models.RankingScores.created_at) == date.today()
@@ -36,6 +38,7 @@ def get_personal_target(db: Session = Depends(get_dp), current_user: models.User
 
     if already_rated:
         raise HTTPException(status_code=400, detail="Du hast heute schon bewertet.")
+    
 
     # 2. Bestehendes Match für heute suchen
     existing_match = db.query(models.DailyTarget).filter(
@@ -46,13 +49,18 @@ def get_personal_target(db: Session = Depends(get_dp), current_user: models.User
     if existing_match:
         return existing_match.target_user 
 
+    one_week_ago = datetime.now(timezone.utc) - timedelta(days=7)
     # 3. Zufälliges Target finden, das:
     # - Nicht der User selbst ist
     # - Das Ranking-Feature aktiviert hat (Opt-In)
     random_target = db.query(models.User).filter(
-        models.User.id != current_user.id,
-        models.User.ranking_enabled == True
-    ).order_by(func.random()).first()
+    models.User.id != current_user.id,
+    models.User.ranking_enabled == True
+).join(models.Post, models.Post.owner_id == models.User.id) \
+ .filter(models.Post.created_at >= one_week_ago) \
+ .group_by(models.User.id) \
+ .order_by(func.random()) \
+ .first()
 
     if not random_target:
         raise HTTPException(
