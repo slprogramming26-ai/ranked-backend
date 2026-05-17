@@ -139,6 +139,13 @@ def get_user(id: int, current_user: int = Depends(oauth2.get_current_user),  db:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"User with id: {id} was not found")
     
     follower_count = db.query(models.Follows).filter(models.Follows.followee_id == id).count()
+    follow_query = db.query(models.Follows).filter(models.Follows.followee_id == id, models.Follows.follower_id == current_user.id).first()
+    following = False
+
+    if follow_query:
+        following = True
+
+
 
     return {"username": target_user.username,
             "vibe_factor_1": target_user.vibe_factor_1,
@@ -146,7 +153,8 @@ def get_user(id: int, current_user: int = Depends(oauth2.get_current_user),  db:
             "profile_picture_url": target_user.profile_picture_url,
             "biography": target_user.biography,
             "ranking_enabled": target_user.ranking_enabled,
-            "follower_count": follower_count
+            "follower_count": follower_count,
+            "is_followed": following
             }
 
 
