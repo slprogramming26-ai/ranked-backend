@@ -129,6 +129,28 @@ def get_current_user(current_user: int = Depends(oauth2.get_current_user),  db: 
             }
 
 
+
+@router.get("/{id}", response_model=schemas.GetUserOut)
+def get_user(id: int, current_user: int = Depends(oauth2.get_current_user),  db: Session = Depends(get_dp)):
+
+    target_user = db.query(models.User).filter(models.User.id == id).first()
+
+    if not target_user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"User with id: {id} was not found")
+    
+    follower_count = db.query(models.Follows).filter(models.Follows.followee_id == id).count()
+
+    return {"username": target_user.username,
+            "vibe_factor_1": target_user.vibe_factor_1,
+            "vibe_factor_2": target_user.vibe_factor_2,
+            "profile_picture_url": target_user.profile_picture_url,
+            "biography": target_user.biography,
+            "ranking_enabled": target_user.ranking_enabled,
+            "follower_count": follower_count
+            }
+
+
+
 @router.put("/")
 def upgrade_user(user_details: schemas.UserDetails,current_user: int = Depends(oauth2.get_current_user),  db: Session = Depends(get_dp)):
     
