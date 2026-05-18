@@ -60,6 +60,7 @@ class UserDetails(BaseModel):
     ranking_enabled: Optional[bool] = None
 
 class GetUserOut(BaseModel):
+    id: int 
     email: Optional[EmailStr] = None
     username: str
     vibe_factor_1: Optional[str] = None 
@@ -67,7 +68,7 @@ class GetUserOut(BaseModel):
     profile_picture_url: Optional[str] = None 
     biography: Optional[str] = None
     ranking_enabled: bool
-    follower_count: int
+    follower_count: Optional[int] = None
     is_followed: Optional[bool] = None
  
     model_config = ConfigDict(from_attributes=True)

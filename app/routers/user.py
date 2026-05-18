@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Response, status, HTTPException, Depends, APIRouter, UploadFile, File
+from fastapi import FastAPI, Response, status, HTTPException, Depends, APIRouter, Query, UploadFile, File
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from PIL import Image
@@ -118,7 +118,8 @@ def get_current_user(current_user: int = Depends(oauth2.get_current_user),  db: 
 
     follower_count = db.query(models.Follows).filter(models.Follows.followee_id == current_user.id).count()
 
-    return {"email": current_user.email,
+    return {"id": current_user.id,
+        "email": current_user.email,
             "username": current_user.username,
             "vibe_factor_1": current_user.vibe_factor_1,
             "vibe_factor_2": current_user.vibe_factor_2,
@@ -127,6 +128,38 @@ def get_current_user(current_user: int = Depends(oauth2.get_current_user),  db: 
             "ranking_enabled": current_user.ranking_enabled,
             "follower_count": follower_count
             }
+
+@router.get("/search", response_model=List[schemas.GetUserOut])
+def search_for_user(
+    search: str = Query(..., min_length=2, max_length=30),
+      current_user: int = Depends(oauth2.get_current_user),
+      db: Session = Depends(get_dp)
+  ):
+      pattern = f"%{search}%"
+      prefix = f"{search}%"
+ 
+      found_users = (
+         db.query(models.User)
+          .filter(models.User.username.ilike(pattern))
+          .filter(models.User.id != current_user.id)
+          .order_by(
+              models.User.username.ilike(prefix).desc(),
+              func.length(models.User.username).asc(),
+              models.User.username.asc(),
+          )
+          .limit(20)
+          .all()
+      )
+ 
+      return [{
+          "id": user.id,
+          "username": user.username,
+          "vibe_factor_1": user.vibe_factor_1,
+          "vibe_factor_2": user.vibe_factor_2,
+          "profile_picture_url": user.profile_picture_url,
+          "biography": user.biography,
+          "ranking_enabled": user.ranking_enabled,
+      } for user in found_users]
 
 
 
@@ -147,7 +180,8 @@ def get_user(id: int, current_user: int = Depends(oauth2.get_current_user),  db:
 
 
 
-    return {"username": target_user.username,
+    return {'id': target_user.id,
+        "username": target_user.username,
             "vibe_factor_1": target_user.vibe_factor_1,
             "vibe_factor_2": target_user.vibe_factor_2,
             "profile_picture_url": target_user.profile_picture_url,
@@ -156,6 +190,9 @@ def get_user(id: int, current_user: int = Depends(oauth2.get_current_user),  db:
             "follower_count": follower_count,
             "is_followed": following
             }
+
+
+
 
 
 
