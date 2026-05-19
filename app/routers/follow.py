@@ -20,7 +20,7 @@ def post_follow(
               
               ):
     
-    followee = db.query(models.User).filter(models.User.id ==  schemas.Follow.followee_id).first()
+    followee = db.query(models.User).filter(models.User.id ==  follow.followee_id).first()
 
     if not followee:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"user with id {follow.followee.id} does not exist")
