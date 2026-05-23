@@ -174,3 +174,27 @@ class LeaderboardEntry(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+# Was der Client uns übers WebSocket schickt
+class ChatMessageIn(BaseModel):
+    to: int
+    message: str = Field(min_length=1, max_length=2000)
+
+    # Keine zusätzlichen Felder erlauben — wenn jemand was unbekanntes mitschickt, abweisen
+    model_config = ConfigDict(extra="forbid")
+
+
+# Was der Empfänger als eingehende Nachricht bekommt
+class ChatMessageOut(BaseModel):
+    type: str = "message"
+    sender_id: int
+    message: str
+    created_at: datetime
+
+
+# Bestätigung an den Sender: "ist raus" (live oder gequeued)
+class ChatAck(BaseModel):
+    type: str = "ack"
+    to: int
+    delivered: bool
+
+

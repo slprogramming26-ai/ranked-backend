@@ -1,7 +1,8 @@
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends, Query, status
 from sqlalchemy.orm import Session
 from jose import JWTError, jwt
-from .. import models, oauth2
+from pydantic import ValidationError
+from .. import models, schemas, oauth2
 from ..database import get_dp
 from .manager import manager
 
@@ -29,16 +30,35 @@ async def chat(
 ):
     user = get_user_from_token(token, db)
     if not user:
-        # 1008 = Policy Violation (passt für Auth-Fehler)
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
 
-    await manager.connect(websocket)
-    await manager.send_to_everyone(f"*** {user.username} joined the chat ***")
+    await manager.connect(user.id, websocket)
+    await manager.flush_pending(user.id, db)
+
     try:
         while True:
-            data = await websocket.receive_text()
-            await manager.send_to_everyone(f"{user.username}: {data}")
+            raw = await websocket.receive_json()
+
+            # Validierung via Pydantic — wirft ValidationError bei Müll
+            try:
+                incoming = schemas.ChatMessageIn.model_validate(raw)
+            except ValidationError as e:
+                await websocket.send_json({
+                    "type": "error",
+                    "detail": e.errors(include_url=False, include_context=False),
+                })
+                continue
+
+            delivered = await manager.send_to_user(
+                sender_id=user.id,
+                recipient_id=incoming.to,
+                content=incoming.message,
+                db=db,
+            )
+
+            ack = schemas.ChatAck(to=incoming.to, delivered=delivered)
+            await websocket.send_json(ack.model_dump(mode="json"))
+
     except WebSocketDisconnect:
-        manager.disconnect(websocket)
-        await manager.send_to_everyone(f"*** {user.username} left the chat ***")
+        manager.disconnect(user.id)
