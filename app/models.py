@@ -92,11 +92,45 @@ class Follows(Base):
     followee_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False,  primary_key= True)
 
 
+
+
+
 class Message(Base):
+   
 
     __tablename__ = 'message'
 
     id = Column(Integer, primary_key=True, nullable=False)
+    sender_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    recipient_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    message = Column(String, nullable=False)
+    created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text('now()'))
+
+
+class GroupChats(Base):
+    
+
+    __tablename__ = 'group_chats'
+
+    group_chat_id = Column(Integer, primary_key=True, nullable=False)
+    creator_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text('now()'))
+
+
+class GroupChatMembership(Base):
+
+    __tablename__ = 'group_chat_memberships'
+
+    group_chat_id = Column(Integer, ForeignKey("group_chats.group_chat_id", ondelete="CASCADE"), nullable=False, primary_key=True)
+    participant_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, primary_key=True)
+
+
+class GroupMessage(Base):
+
+    __tablename__ = 'group_message'
+
+    id = Column(Integer, primary_key=True, nullable=False)
+    group_chat_id = Column(Integer, ForeignKey("group_chats.group_chat_id", ondelete="CASCADE"), nullable=False)
     sender_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     recipient_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     message = Column(String, nullable=False)

@@ -1,6 +1,6 @@
 from datetime import datetime
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
-from typing import Optional
+from typing import Optional, Literal
 from pydantic.types import conint
 
 class UserOut(BaseModel):
@@ -174,27 +174,69 @@ class LeaderboardEntry(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-# Was der Client uns übers WebSocket schickt
+# =========================================================
+# Chat / WebSocket Schemas
+# =========================================================
+# Alle Chat-Nachrichten laufen über EINEN WebSocket-Endpoint.
+# Damit Server + Client wissen worum's bei jeder einzelnen Nachricht geht,
+# trägt jede Nachricht ein "kind"-Feld:
+#   "dm"      → Direct Message  (1:1)
+#   "group"   → Gruppen-Nachricht
+#   "ack"     → Bestätigung vom Server an den Sender ("ist raus")
+#   "error"   → wenn was schief lief (z.B. Validierung)
+#
+# Literal["dm"] sorgt dafür dass Pydantic die Nachricht nur akzeptiert
+# wenn EXAKT "dm" drinsteht — wer "DM" oder "direct" schickt wird abgewiesen.
+
+
+# --- Vom Client an den Server ---
+
 class ChatMessageIn(BaseModel):
-    to: int
+    """DM vom Client. JSON: { "kind": "dm", "to": <user_id>, "message": "..." }"""
+    kind: Literal["dm"]
+    to: int  # recipient user_id
     message: str = Field(min_length=1, max_length=2000)
 
-    # Keine zusätzlichen Felder erlauben — wenn jemand was unbekanntes mitschickt, abweisen
+    # extra="forbid" → unbekannte Felder werden abgewiesen statt ignoriert
+    # (kleine zusätzliche Härtung gegen versehentliche oder bösartige Payloads)
     model_config = ConfigDict(extra="forbid")
 
 
-# Was der Empfänger als eingehende Nachricht bekommt
+class GroupChatMessageIn(BaseModel):
+    """Group-Message vom Client. JSON: { "kind": "group", "to": <group_chat_id>, "message": "..." }"""
+    kind: Literal["group"]
+    to: int  # group_chat_id
+    message: str = Field(min_length=1, max_length=2000)
+
+    model_config = ConfigDict(extra="forbid")
+
+
+# --- Vom Server an die Clients ---
+
 class ChatMessageOut(BaseModel):
-    type: str = "message"
+    """Eingehende DM die der Empfänger über seinen Socket bekommt."""
+    kind: Literal["dm"] = "dm"
     sender_id: int
     message: str
     created_at: datetime
 
 
-# Bestätigung an den Sender: "ist raus" (live oder gequeued)
-class ChatAck(BaseModel):
-    type: str = "ack"
-    to: int
-    delivered: bool
+class GroupChatMessageOut(BaseModel):
+    """Eingehende Gruppen-Nachricht die ein Gruppen-Mitglied bekommt."""
+    kind: Literal["group"] = "group"
+    group_chat_id: int
+    sender_id: int
+    message: str
+    created_at: datetime
 
+
+class ChatAck(BaseModel):
+    """Bestätigung an den Sender nach jedem Send.
+    delivered_live = Anzahl Empfänger die's live bekommen haben.
+      - DM:     0 (Empfänger offline, gequeued) oder 1 (live ausgeliefert)
+      - Group:  0..n (Anzahl online Mitglieder die's bekommen haben)
+    Der Rest landet in der pending Queue und wird beim Reconnect ausgeliefert."""
+    kind: Literal["ack"] = "ack"
+    to: int  # user_id (bei DM) oder group_chat_id (bei group)
+    delivered_live: int
 
