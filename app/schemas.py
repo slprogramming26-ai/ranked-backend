@@ -189,8 +189,6 @@ class LeaderboardEntry(BaseModel):
 # wenn EXAKT "dm" drinsteht — wer "DM" oder "direct" schickt wird abgewiesen.
 
 
-# --- Vom Client an den Server ---
-
 class ChatMessageIn(BaseModel):
     """DM vom Client. JSON: { "kind": "dm", "to": <user_id>, "message": "..." }"""
     kind: Literal["dm"]
@@ -210,8 +208,6 @@ class GroupChatMessageIn(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-
-# --- Vom Server an die Clients ---
 
 class ChatMessageOut(BaseModel):
     """Eingehende DM die der Empfänger über seinen Socket bekommt."""
@@ -240,3 +236,15 @@ class ChatAck(BaseModel):
     to: int  # user_id (bei DM) oder group_chat_id (bei group)
     delivered_live: int
 
+
+class GroupChatUpdate(BaseModel):
+    group_name: Optional[str] = None
+    profile_picture: Optional[str] = None
+
+
+class GroupChatInformationOut(BaseModel):
+    group_chat_id: int
+    group_name: Optional[str] = None
+    profile_picture: Optional[str] = None
+    
+    model_config = ConfigDict(from_attributes=True)

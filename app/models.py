@@ -116,6 +116,9 @@ class GroupChats(Base):
     creator_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text('now()'))
 
+    group_name = Column(String, nullable=True)  
+    profile_picture = Column(String, nullable=True)
+
 
 class GroupChatMembership(Base):
 
