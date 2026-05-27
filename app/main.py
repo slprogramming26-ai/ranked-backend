@@ -26,7 +26,7 @@ app.include_router(comment.router)
 app.include_router(ranking.router)
 app.include_router(follow.router)
 app.include_router(ws_routes.router)
-app.include_router(group_chat)
+app.include_router(group_chat.router)
 
 # models.Base.metadata.create_all(bind=engine)
 
