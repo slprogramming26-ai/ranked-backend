@@ -62,7 +62,18 @@ def leave_group_chat(
     db: Session = Depends(get_dp),
     current_user=Depends(oauth2.get_current_user),
 ):
-    
+    group = db.query(models.GroupChats).filter(
+        models.GroupChats.group_chat_id == group_chat_id,
+    ).first()
+    if not group:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"group chat {group_chat_id} not found")
+
+    if group.creator_id == current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="creator cannot leave; delete the group instead",
+        )
+
     membership = db.query(models.GroupChatMembership).filter(
         models.GroupChatMembership.group_chat_id == group_chat_id,
         models.GroupChatMembership.participant_id == current_user.id,

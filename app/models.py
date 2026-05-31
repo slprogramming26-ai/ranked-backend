@@ -138,3 +138,20 @@ class GroupMessage(Base):
     recipient_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     message = Column(String, nullable=False)
     created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text('now()'))
+
+
+
+class Block(Base):
+    __tablename__ = 'blocks'
+    blocker_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    blocked_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text('now()'))
+
+
+class Report(Base):
+    __tablename__ = 'reports'
+    id = Column(Integer, primary_key=True, nullable=False)
+    reporter_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    reported_user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    reason = Column(String, nullable=False) # z.B. "Spam", "Beleidigung", "Unangebracht"
+    created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text('now()'))
