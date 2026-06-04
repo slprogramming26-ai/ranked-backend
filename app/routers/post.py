@@ -126,8 +126,6 @@ def create_posts(post: schemas.PostCreate, db: Session = Depends(get_dp), curren
 
 @router.get("/{id}", response_model=schemas.PostOut)
 def get_post(id: int, response: Response, db: Session = Depends(get_dp), response_model=schemas.Post, current_user: int = Depends(oauth2.get_current_user)):
-#    curser.execute("""SELECT * FROM posts WHERE id = %s""", (str(id),))
-#    post = curser.fetchone()
 
 
     post = db.query(models.Post, func.count(models.Votes.post_id).label("votes")).join(
@@ -145,23 +143,31 @@ def get_post(id: int, response: Response, db: Session = Depends(get_dp), respons
 @router.delete("/{id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_post(id: int, db: Session = Depends(get_dp), current_user: int = Depends(oauth2.get_current_user)):
 
-#    curser.execute("""DELETE FROM posts WHERE id = %s RETURNING *""", (str(id),))
- #   deleted_post = curser.fetchone()
- #   conn.commit()
     post_query = db.query(models.Post).filter(models.Post.id == id)
-
     post = post_query.first()
 
     if post == None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail= f"Post with id: {id} was not found")
-    
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Post with id: {id} was not found")
 
     if post.owner_id != current_user.id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"Not authorize to perform requested action")
-    
-    post_query.delete(synchronize_session = False)
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorize to perform requested action")
+
+    # S3-Bild löschen, falls vorhanden
+    if post.image_url:
+        try:
+            # Aus der URL den S3-Key extrahieren: alles nach "/public/{BUCKET_NAME}/"
+            marker = f"/public/{BUCKET_NAME}/"
+            key_start = post.image_url.find(marker)
+            if key_start != -1:
+                s3_key = post.image_url[key_start + len(marker):]
+                s3_client.delete_object(Bucket=BUCKET_NAME, Key=s3_key)
+        except Exception as e:
+            print(f"Warnung: S3-Bild konnte nicht gelöscht werden: {e}")
+            # Kein Hard-Fail – DB-Eintrag wird trotzdem gelöscht
+
+    post_query.delete(synchronize_session=False)
     db.commit()
-    
+
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
