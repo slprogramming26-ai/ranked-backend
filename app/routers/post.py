@@ -5,7 +5,7 @@ from PIL import Image
 import io
 import boto3
 from ..config import settings
-
+import uuid
 from sqlalchemy import func
 from .. import models, schemas, oauth2
 from ..database import get_dp
@@ -29,6 +29,20 @@ s3_client = boto3.client(
     aws_access_key_id=S3_ACCESS_KEY,
     aws_secret_access_key=S3_SECRET_KEY
 )
+
+def delete_s3_object(image_url: str | None):
+    """Löscht eine Datei aus S3 anhand ihrer öffentlichen URL. Schluckt Fehler bewusst."""
+    if not image_url:
+        return
+    marker = f"/public/{BUCKET_NAME}/"
+    idx = image_url.find(marker)
+    if idx == -1:
+        return
+    s3_key = image_url[idx + len(marker):]
+    try:
+        s3_client.delete_object(Bucket=BUCKET_NAME, Key=s3_key)
+    except Exception as e:
+        print(f"Warnung: S3-Bild konnte nicht gelöscht werden: {e}")
 
 
 
@@ -73,7 +87,7 @@ async def upload_post_image(
         buffer.seek(0)
 
         # 5. Upload zu Supabase
-        file_name = f"posts/{file.filename}"
+        file_name = f"posts/{uuid.uuid4().hex}.jpg"
         s3_client.upload_fileobj(
             buffer, 
             BUCKET_NAME, 
@@ -152,19 +166,7 @@ def delete_post(id: int, db: Session = Depends(get_dp), current_user: int = Depe
     if post.owner_id != current_user.id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorize to perform requested action")
 
-    # S3-Bild löschen, falls vorhanden
-    if post.image_url:
-        try:
-            # Aus der URL den S3-Key extrahieren: alles nach "/public/{BUCKET_NAME}/"
-            marker = f"/public/{BUCKET_NAME}/"
-            key_start = post.image_url.find(marker)
-            if key_start != -1:
-                s3_key = post.image_url[key_start + len(marker):]
-                s3_client.delete_object(Bucket=BUCKET_NAME, Key=s3_key)
-        except Exception as e:
-            print(f"Warnung: S3-Bild konnte nicht gelöscht werden: {e}")
-            # Kein Hard-Fail – DB-Eintrag wird trotzdem gelöscht
-
+    delete_s3_object(post.image_url)
     post_query.delete(synchronize_session=False)
     db.commit()
 

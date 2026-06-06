@@ -1,7 +1,11 @@
 from datetime import datetime
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
-from typing import Optional, Literal
-from pydantic.types import conint
+from typing import Optional, Literal, List
+
+
+# =========================================================
+# User & Auth
+# =========================================================
 
 class UserOut(BaseModel):
     id: int
@@ -13,64 +17,33 @@ class UserOut(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
-class PostBase(BaseModel):
-    title: str
-    content: str
-    published: bool = True
-    
-
-
-class PostCreate(PostBase):
-    image_url: Optional[str] = None
-    category: Optional[str] = None
-    pass 
-
-class Post(PostBase):
-    id: int
-    created_at: datetime
-    owner_id: int
-    owner: UserOut
-    model_config = ConfigDict(from_attributes=True)
-    image_url: Optional[str] = None
-    category: Optional[str] = None
-
-class PostOut(BaseModel):
-    post: Post   
-    votes: int
-    model_config = ConfigDict(from_attributes=True)
-
-
-
-
-
-
-
 
 class UserCreate(BaseModel):
     email: EmailStr
     username: str
     passwort: str
-    
+
 
 class UserDetails(BaseModel):
     vibe_factor_1: Optional[str] = None
     vibe_factor_2: Optional[str] = None
-    profile_picture_url: Optional[str] = None 
+    profile_picture_url: Optional[str] = None
     biography: Optional[str] = None
     ranking_enabled: Optional[bool] = None
 
+
 class GetUserOut(BaseModel):
-    id: int 
+    id: int
     email: Optional[EmailStr] = None
     username: str
-    vibe_factor_1: Optional[str] = None 
+    vibe_factor_1: Optional[str] = None
     vibe_factor_2: Optional[str] = None
-    profile_picture_url: Optional[str] = None 
+    profile_picture_url: Optional[str] = None
     biography: Optional[str] = None
     ranking_enabled: bool
     follower_count: Optional[int] = None
     is_followed: Optional[bool] = None
- 
+
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -79,23 +52,51 @@ class UserLogin(BaseModel):
     passwort: str
 
 
-
-
-
-
-
 class Token(BaseModel):
-    access_token : str
-    toke_type : str
-    
+    access_token: str
+    toke_type: str
+
 
 class TokenData(BaseModel):
     id: int
 
 
+# =========================================================
+# Posts
+# =========================================================
+
+class PostBase(BaseModel):
+    title: str
+    content: str
+    published: bool = True
 
 
+class PostCreate(PostBase):
+    image_url: Optional[str] = None
+    flag: Optional[Literal["engagement", "creativity", "productivity"]] = None
 
+
+class Post(PostBase):
+    id: int
+    created_at: datetime
+    owner_id: int
+    owner: UserOut
+    image_url: Optional[str] = None
+    flag: Optional[str] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class PostOut(BaseModel):
+    post: Post
+    votes: int
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+# =========================================================
+# Votes & Follows
+# =========================================================
 
 class Vote(BaseModel):
     post_id: int
@@ -105,23 +106,20 @@ class Vote(BaseModel):
 class Follow(BaseModel):
     followee_id: int
     dir: int = Field(le=1)
-    
 
 
-
-
-
-
-
-
+# =========================================================
+# Comments
+# =========================================================
 
 class CommentBase(BaseModel):
     post_id: int
     comment: str
 
-    
+
 class CreateComment(CommentBase):
     pass
+
 
 class CommentOut(BaseModel):
     username: str
@@ -131,47 +129,46 @@ class CommentOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+# =========================================================
+# Ranking / Swipe
+# =========================================================
 
-class RankingScore(BaseModel):
-    id: int
-    voter_id: int
+class SwipeIn(BaseModel):
+    post_id: int = Field(gt=0, description="ID des bewerteten Posts")
+    direction: bool  # True = Rechts/Cool, False = Links/Nicht cool
+
+
+class SwipeSession(BaseModel):
+    # voter_id kommt aus dem Login-Token (Server), NICHT vom Client.
+    # created_at setzt die DB selbst.
     target_user_id: int
-    
-    
-    productivity_rating: int = Field(ge=1, le=100) 
-    engagement_rating: int = Field(ge=1, le=100)   
-    creativity_rating: int = Field(ge=1, le=100)
-    
-    created_at : datetime
+    swipes: List[SwipeIn] = Field(min_length=1, max_length=20)
 
-class RankingScoreOut(BaseModel):
-    voter_id: int
-    target_user_id: int
-    productivity_rating: int
-    engagement_rating: int
-    creativity_rating: int
-    created_at: datetime
 
-    model_config = ConfigDict(from_attributes=True)
+class SwipeSessionOut(BaseModel):
+    success: bool
+    total_points: int = Field(ge=0)
+    breakdown: dict[str, int] = Field(
+        description="Punkte aufgeschlüsselt nach Flag: {None: X, engagement: Y, creativity: Z, productivity: W}"
+    )
+    message: Optional[str] = None
 
-class RankingScoreCreate(BaseModel):
-    target_user_id: int
-    
-    
-    productivity_rating: int = Field(ge=1, le=100) 
-    engagement_rating: int = Field(ge=1, le=100)   
-    creativity_rating: int = Field(ge=1, le=100)
+    model_config = ConfigDict(extra="forbid")
 
 
 class LeaderboardEntry(BaseModel):
     target_user_id: int
     username: str
     profile_picture_url: Optional[str] = None
-    avg_productivity: float
-    avg_creativity: float
-    avg_engagement: float
+    total_points: int
     total_ratings: int
+
     model_config = ConfigDict(from_attributes=True)
+
+
+class MyTargetOut(BaseModel):
+    user_data: UserOut
+    posts: List[Post]
 
 
 # =========================================================
@@ -246,5 +243,5 @@ class GroupChatInformationOut(BaseModel):
     group_chat_id: int
     group_name: Optional[str] = None
     profile_picture: Optional[str] = None
-    
+
     model_config = ConfigDict(from_attributes=True)

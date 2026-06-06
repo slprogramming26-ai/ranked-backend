@@ -15,7 +15,7 @@ class Post(Base):
     created_at = Column(TIMESTAMP(timezone=True), nullable= False, server_default= text('now()'))
     owner_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable = False )
     image_url = Column(String, nullable=True)
-    category = Column(String, nullable= True)
+    flag = Column(String, nullable= True)  # "engagement" | "creativity" | "productivity" | None — Punkte-Multiplikator
 
     owner = relationship("User")
 
@@ -73,15 +73,14 @@ class RankingScores(Base):
 
     id = Column(Integer, primary_key=True, nullable=False)
     voter_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    target_user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    
-    # Deine Kriterien
-    productivity_rating = Column(Integer, nullable=False) # 1-10
-    engagement_rating = Column(Integer, nullable=False)   # 1-10
-    creativity_rating = Column(Integer, nullable=False)
+    post_id = Column(Integer, ForeignKey("posts.id", ondelete="CASCADE"), nullable=False)
 
-    
+    direction = Column(Boolean, nullable=False)  # True = Rechts/Cool, False = Links/Nicht cool
+    points = Column(Integer, nullable=False)      # vom Server berechnet aus post.flag + direction
+
     created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text('now()'))
+
+    post = relationship("Post")
 
 
 class Follows(Base):

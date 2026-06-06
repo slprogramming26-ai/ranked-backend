@@ -5,11 +5,13 @@ from PIL import Image
 import io
 import boto3
 from ..config import settings
-
+import uuid
 from sqlalchemy import func
 from .. import models, schemas, oauth2,utils
 from ..database import get_dp
 from ..ws import manager
+from .post import delete_s3_object as delete_post_image
+
 
 
 router = APIRouter(
@@ -29,6 +31,20 @@ s3_client = boto3.client(
     aws_access_key_id=S3_ACCESS_KEY,
     aws_secret_access_key=S3_SECRET_KEY
 )
+
+def delete_s3_object(image_url: str | None):
+    """Löscht eine Datei aus S3 anhand ihrer öffentlichen URL. Schluckt Fehler bewusst."""
+    if not image_url:
+        return
+    marker = f"/public/{BUCKET_NAME}/"
+    idx = image_url.find(marker)
+    if idx == -1:
+        return
+    s3_key = image_url[idx + len(marker):]
+    try:
+        s3_client.delete_object(Bucket=BUCKET_NAME, Key=s3_key)
+    except Exception as e:
+        print(f"Warnung: S3-Bild konnte nicht gelöscht werden: {e}")
 
 
 
@@ -69,7 +85,7 @@ async def upload_user_image(
         buffer.seek(0)
 
         # 4. Upload zu Supabase
-        file_name = f"profile_picture/{file.filename}"
+        file_name = f"profile_picture/{uuid.uuid4().hex}.jpg"
         s3_client.upload_fileobj(
             buffer,
             BUCKET_NAME,
@@ -215,6 +231,25 @@ def upgrade_user(user_details: schemas.UserDetails,current_user: int = Depends(o
     db.commit()
 
     return {"status": "success", "updated_fields": list(update_data.keys())}
+
+
+@router.delete("/", status_code=status.HTTP_204_NO_CONTENT)
+def delete_account(current_user = Depends(oauth2.get_current_user),
+                   db: Session = Depends(get_dp)):
+    # 1. Bilder ALLER Posts des Users einsammeln und aus S3 löschen
+    posts = db.query(models.Post).filter(models.Post.owner_id == current_user.id).all()
+    for post in posts:
+        delete_s3_object(post.image_url)
+
+    # 2. Profilbild löschen
+    delete_s3_object(current_user.profile_picture_url)
+
+    # 3. User aus DB löschen -> CASCADE räumt posts/votes/comments automatisch auf
+    db.query(models.User).filter(models.User.id == current_user.id) \
+        .delete(synchronize_session=False)
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
 
 
 @router.post("/block/{id}", status_code=status.HTTP_201_CREATED)
