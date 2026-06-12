@@ -104,6 +104,9 @@ class Message(Base):
     recipient_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     message = Column(String, nullable=False)
     created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text('now()'))
+    # Vom Client erzeugte UUID pro Nachricht (Idempotenz-/Dedup-Key).
+    # nullable=True, weil Altbestand keinen Key hat.
+    client_msg_id = Column(String, nullable=True)
 
 
 class GroupChats(Base):
@@ -125,18 +128,24 @@ class GroupChatMembership(Base):
 
     group_chat_id = Column(Integer, ForeignKey("group_chats.group_chat_id", ondelete="CASCADE"), nullable=False, primary_key=True)
     participant_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, primary_key=True)
+    joined_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text('now()'))
 
 
 class GroupMessage(Base):
 
     __tablename__ = 'group_message'
 
+    # Eine Zeile pro Nachricht (Option A) — KEIN recipient_id mehr.
+    # Wer die Nachricht sehen darf, ergibt sich aus der Mitgliedschaft +
+    # joined_at (Mitglieder sehen nur, was nach ihrem Beitritt gesendet wurde).
     id = Column(Integer, primary_key=True, nullable=False)
     group_chat_id = Column(Integer, ForeignKey("group_chats.group_chat_id", ondelete="CASCADE"), nullable=False)
     sender_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    recipient_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     message = Column(String, nullable=False)
     created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text('now()'))
+    # Vom Client erzeugte UUID pro Nachricht (Idempotenz-/Dedup-Key).
+    # nullable=True, weil Altbestand keinen Key hat.
+    client_msg_id = Column(String, nullable=True)
 
 
 

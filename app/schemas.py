@@ -191,6 +191,9 @@ class ChatMessageIn(BaseModel):
     kind: Literal["dm"]
     to: int  # recipient user_id
     message: str = Field(min_length=1, max_length=2000)
+    # Vom Client erzeugte UUID pro Nachricht. Der Client schickt sie mit und
+    # erkennt damit seine eigene, später gesyncte Server-Zeile wieder (Dedup).
+    client_msg_id: Optional[str] = None
 
     # extra="forbid" → unbekannte Felder werden abgewiesen statt ignoriert
     # (kleine zusätzliche Härtung gegen versehentliche oder bösartige Payloads)
@@ -202,6 +205,7 @@ class GroupChatMessageIn(BaseModel):
     kind: Literal["group"]
     to: int  # group_chat_id
     message: str = Field(min_length=1, max_length=2000)
+    client_msg_id: Optional[str] = None
 
     model_config = ConfigDict(extra="forbid")
 
@@ -212,6 +216,18 @@ class ChatMessageOut(BaseModel):
     sender_id: int
     message: str
     created_at: datetime
+    client_msg_id: Optional[str] = None
+
+class MessageOut(BaseModel):
+    id: int
+    sender_id: int
+    recipient_id: int
+    message: str
+    created_at: datetime
+    client_msg_id: Optional[str] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
 
 
 class GroupChatMessageOut(BaseModel):
@@ -221,6 +237,18 @@ class GroupChatMessageOut(BaseModel):
     sender_id: int
     message: str
     created_at: datetime
+    client_msg_id: Optional[str] = None
+
+class GroupMessageOut(BaseModel):
+    id: int
+    group_chat_id: int
+    sender_id: int
+    message: str
+    created_at: datetime
+    client_msg_id: Optional[str] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
 
 
 class ChatAck(BaseModel):

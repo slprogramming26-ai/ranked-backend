@@ -49,17 +49,6 @@ async def chat(
 
     await manager.accept(websocket)
 
-    # WICHTIG: flush BEVOR wir in active_connections registrieren — sonst kann
-    # eine Live-Nachricht von einem anderen User dazwischenrutschen und der Client
-    # sieht "neue" Nachrichten vor älteren pending-Messages.
-    with _db_scope() as db:
-
-        manager.load_block_user(user.id, db)
-        
-        flushed_ok = await manager.flush_pending(user.id, websocket, db)
-    if not flushed_ok:
-        # Socket starb mitten im Flush → gar nicht erst registrieren.
-        return
 
     manager.register(user.id, websocket)
 
@@ -101,16 +90,18 @@ async def _handle_dm(websocket: WebSocket, user: models.User, raw: dict):
             "detail": e.errors(include_url=False, include_context=False),
         })
         return
-
-    with _db_scope() as db:
-        
-
-        delivered_live = await manager.send_to_user(
-            sender_id=user.id,
-            recipient_id=incoming.to,
-            content=incoming.message,
-            db=db,
-        )
+    try:
+        with _db_scope() as db:
+            delivered_live = await manager.send_to_user(
+                sender_id=user.id,
+                recipient_id=incoming.to,
+                content=incoming.message,
+                db=db,
+                client_msg_id=incoming.client_msg_id,
+            )
+    except ChatError as e:
+        await websocket.send_json({"kind": "error", "detail": str(e)})
+        return
 
     ack = schemas.ChatAck(to=incoming.to, delivered_live=delivered_live)
     await websocket.send_json(ack.model_dump(mode="json"))
@@ -135,6 +126,7 @@ async def _handle_group(websocket: WebSocket, user: models.User, raw: dict):
                 group_chat_id=incoming.to,
                 content=incoming.message,
                 db=db,
+                client_msg_id=incoming.client_msg_id,
             )
     except ChatError as e:
         await websocket.send_json({"kind": "error", "detail": str(e)})

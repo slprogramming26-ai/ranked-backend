@@ -9,7 +9,6 @@ import uuid
 from sqlalchemy import func
 from .. import models, schemas, oauth2,utils
 from ..database import get_dp
-from ..ws import manager
 from .post import delete_s3_object as delete_post_image
 
 
@@ -225,6 +224,7 @@ def upgrade_user(user_details: schemas.UserDetails,current_user: int = Depends(o
 
     update_data = user_details.dict(exclude_unset=True)
 
+
     # 3. Update ausführen
     user_query.update(update_data, synchronize_session=False)
     
@@ -274,15 +274,8 @@ def block_user(id: int, current_user: int = Depends(oauth2.get_current_user), db
     new_blocked_user = models.Block(blocker_id=current_user.id, blocked_id=id)
 
     db.add(new_blocked_user)
-    db.commit()  
+    db.commit()
     db.refresh(new_blocked_user)
-
-    
-
-    if current_user.id in manager.block_cache:
-        manager.block_cache[current_user.id].add(id)
-    if id in manager.block_cache:
-        manager.block_cache[id].add(current_user.id)
 
     return {"message": f"You blocked user {id} successfully"}
 
@@ -305,11 +298,6 @@ def delete_user_block(id: int, current_user: int = Depends(oauth2.get_current_us
     
     db.delete(blocked_user)
     db.commit()
-
-    if current_user.id in manager.block_cache:
-        manager.block_cache[current_user.id].discard(id) 
-    if id in manager.block_cache:
-        manager.block_cache[id].discard(current_user.id)
 
     return {"message": f"User {id} no longer blocked"}
     
