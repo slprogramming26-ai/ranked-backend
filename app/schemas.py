@@ -54,7 +54,12 @@ class UserLogin(BaseModel):
 
 class Token(BaseModel):
     access_token: str
-    toke_type: str
+    refresh_token: str
+    token_type: str
+
+
+class RefreshRequest(BaseModel):
+    refresh_token: str
 
 
 class TokenData(BaseModel):
@@ -190,7 +195,7 @@ class ChatMessageIn(BaseModel):
     """DM vom Client. JSON: { "kind": "dm", "to": <user_id>, "message": "..." }"""
     kind: Literal["dm"]
     to: int  # recipient user_id
-    message: str = Field(min_length=1, max_length=2000)
+    message: str = Field(min_length=1, max_length=4096) #ab jetzt verschlüsselt
     # Vom Client erzeugte UUID pro Nachricht. Der Client schickt sie mit und
     # erkennt damit seine eigene, später gesyncte Server-Zeile wieder (Dedup).
     client_msg_id: Optional[str] = None
@@ -204,7 +209,7 @@ class GroupChatMessageIn(BaseModel):
     """Group-Message vom Client. JSON: { "kind": "group", "to": <group_chat_id>, "message": "..." }"""
     kind: Literal["group"]
     to: int  # group_chat_id
-    message: str = Field(min_length=1, max_length=2000)
+    message: str = Field(min_length=1, max_length=4096)
     client_msg_id: Optional[str] = None
 
     model_config = ConfigDict(extra="forbid")
@@ -271,5 +276,21 @@ class GroupChatInformationOut(BaseModel):
     group_chat_id: int
     group_name: Optional[str] = None
     profile_picture: Optional[str] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+# E2EE
+
+
+class PublicKeyUpload(BaseModel):
+    """Was der Client hochlädt: nur seinen öffentlichen Schlüssel (base64)."""
+    public_key: str = Field(min_length=1, max_length=100)
+
+
+class PublicKeyOut(BaseModel):
+    """Was wir zurückgeben, wenn jemand einen Schlüssel abfragt."""
+    user_id: int
+    public_key: str
 
     model_config = ConfigDict(from_attributes=True)

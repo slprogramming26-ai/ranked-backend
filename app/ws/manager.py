@@ -2,6 +2,7 @@ from fastapi import WebSocket
 from typing import Dict
 from sqlalchemy.orm import Session
 from .. import models, schemas
+from fastapi.concurrency import run_in_threadpool
 
 
 class ChatError(Exception):
@@ -50,6 +51,8 @@ class ConnectionManager:
             | ((models.Block.blocker_id == recipient_id) & (models.Block.blocked_id == sender_id))
         ).first()
         return block is not None
+    
+
 
 
     async def accept(self, websocket: WebSocket):
@@ -65,14 +68,12 @@ class ConnectionManager:
         self.active_connections.pop(user_id, None)
 
 
-    async def send_to_user(
-        self,
+    def _prepare_dm_send(self,
         sender_id: int,
         recipient_id: int,
         content: str,
         db: Session,
-        client_msg_id: str | None = None,
-    ) -> int:
+        client_msg_id: str | None = None,):
 
 
         if self.is_blocked(sender_id, recipient_id, db):
@@ -92,13 +93,36 @@ class ConnectionManager:
         db.commit()
         db.refresh(message)
 
-        #Empfänger online => live pushen.
+        # Nur einfache Daten zurückgeben (kein ORM-Objekt) -> keine Lazy-Load-Falle.
+        return message.created_at
+
+
+    async def send_to_user(
+        self,
+        sender_id: int,
+        recipient_id: int,
+        content: str,
+        db: Session,
+        client_msg_id: str | None = None,
+    ) -> int:
+
+        # Phase 1: DB-Arbeit im Threadpool (ein Hop), gibt nur created_at zurück.
+        created_at = await run_in_threadpool(
+            self._prepare_dm_send,
+            sender_id,
+            recipient_id,
+            content,
+            db,
+            client_msg_id,
+        )
+
+        # Phase 2: der Live-Send MUSS auf dem Event-Loop bleiben (echtes async).
         socket = self.active_connections.get(recipient_id)
         if socket is not None:
             out = schemas.ChatMessageOut(
                 sender_id=sender_id,
                 message=content,
-                created_at=message.created_at,
+                created_at=created_at,
                 client_msg_id=client_msg_id,
             )
             # mode="json" → datetime wird als ISO-String serialisiert,
@@ -113,22 +137,14 @@ class ConnectionManager:
 
     # Group Messages
 
-
-    async def send_to_group(
-        self,
+    def _prepare_group_send(
+            self,
         sender_id: int,
         group_chat_id: int,
         content: str,
         db: Session,
         client_msg_id: str | None = None,
-    ) -> int:
-        """Gruppen-Nachricht speichern und an alle ONLINE-Mitglieder (außer Sender) live verteilen.
-
-        Return: Anzahl der LIVE ausgelieferten Empfänger. Offline-Mitglieder holen sich
-                die Nachricht später per REST ("seit Zeitstempel X").
-
-        Raised ChatError bei: Gruppe existiert nicht, Sender ist kein Mitglied."""
-
+    ) -> tuple:
         group = db.query(models.GroupChats).filter(
             models.GroupChats.group_chat_id == group_chat_id,
         ).first()
@@ -162,27 +178,61 @@ class ConnectionManager:
         blocked = self.blocked_user_ids(sender_id, db)
         members = [m for m in members if m.participant_id not in blocked]
 
+        
+
+        return message.created_at, [m.participant_id for m in members]
+
+
+
+
+    async def send_to_group(
+        self,
+        sender_id: int,
+        group_chat_id: int,
+        content: str,
+        db: Session,
+        client_msg_id: str | None = None,
+    ) -> int:
+        """Gruppen-Nachricht speichern und an alle ONLINE-Mitglieder (außer Sender) live verteilen.
+
+        Return: Anzahl der LIVE ausgelieferten Empfänger. Offline-Mitglieder holen sich
+                die Nachricht später per REST ("seit Zeitstempel X").
+
+        Raised ChatError bei: Gruppe existiert nicht, Sender ist kein Mitglied."""
+
+        # Phase 1: die komplette DB-Arbeit im Threadpool (ein Hop), gibt nur einfache Daten zurück.
+        created_at, recipient_ids = await run_in_threadpool(
+            self._prepare_group_send,
+            sender_id,
+            group_chat_id,
+            content,
+            db,
+            client_msg_id,
+        )
+
+        # Phase 2: die Live-Sends MÜSSEN auf dem Event-Loop bleiben (echtes async).
         out = schemas.GroupChatMessageOut(
             group_chat_id=group_chat_id,
             sender_id=sender_id,
             message=content,
-            created_at=message.created_at,
+            created_at=created_at,
             client_msg_id=client_msg_id,
         )
         payload = out.model_dump(mode="json")
 
         delivered_live = 0
-        dead_sockets = []     # User deren Socket beim Send gestorben ist → aus Map raus
+        dead_sockets = []   # User deren Socket beim Send gestorben ist → aus Map raus
 
-        for member in members:
-            socket = self.active_connections.get(member.participant_id)
+        # recipient_ids ist eine Liste von participant_ids (ints), keine ORM-Objekte.
+        for uid in recipient_ids:
+            socket = self.active_connections.get(uid)
             if socket is None:
                 continue  # offline → holt sich die Nachricht später per REST
             if await _safe_send(socket, payload):
                 delivered_live += 1
             else:
                 # Socket kaputt → später aus Map räumen. Nachricht ist schon gespeichert.
-                dead_sockets.append(member.participant_id)
+                dead_sockets.append(uid)
 
         for uid in dead_sockets:
             self.active_connections.pop(uid, None)

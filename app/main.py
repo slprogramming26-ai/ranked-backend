@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from . import models
 from .database import engine
-from .routers import group_chat, post, user, auth, vote, comment,ranking, follow, message
+from .routers import group_chat, post, user, auth, vote, comment,ranking, follow, message, key
 from .ws import routes as ws_routes
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -28,6 +28,7 @@ app.include_router(follow.router)
 app.include_router(ws_routes.router)
 app.include_router(group_chat.router)
 app.include_router(message.router)
+app.include_router(key.router)
 
 # models.Base.metadata.create_all(bind=engine)
 

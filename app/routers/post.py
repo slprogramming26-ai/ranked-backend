@@ -1,4 +1,5 @@
 from fastapi import FastAPI, Response, status, HTTPException, Depends, APIRouter, UploadFile, File
+from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from PIL import Image
@@ -47,60 +48,71 @@ def delete_s3_object(image_url: str | None):
 
 
 
+def _process_and_upload_image(contents: bytes) -> str:
+    """Der BLOCKIERENDE Teil: Pillow-Verarbeitung (CPU) + S3-Upload (sync I/O).
+    Läuft im Threadpool (siehe run_in_threadpool unten), damit der Event-Loop
+    NICHT einfriert, während ein Bild verarbeitet/hochgeladen wird.
+    Gibt die öffentliche URL des Bildes zurück."""
+    # Pillow Verarbeitung
+    img = Image.open(io.BytesIO(contents))
+    img.verify()  # Validieren
+
+    # Nach verify() muss das Objekt neu geladen werden
+    img = Image.open(io.BytesIO(contents))
+
+    # Decompression Bomb Schutz
+    if img.width * img.height > 20_000_000:
+        raise HTTPException(status_code=400, detail="Bild hat zu viele Pixel!")
+
+    # Resize & Kompression
+    img.thumbnail((1024, 1024))
+    if img.mode in ("RGBA", "P"):  # Transparent-Support zu RGB konvertieren
+        img = img.convert("RGB")
+
+    buffer = io.BytesIO()
+    img.save(buffer, format="JPEG", quality=85)
+    buffer.seek(0)
+
+    # Upload zu Supabase
+    file_name = f"posts/{uuid.uuid4().hex}.jpg"
+    s3_client.upload_fileobj(
+        buffer,
+        BUCKET_NAME,
+        file_name,
+        ExtraArgs={'ACL': 'public-read', 'ContentType': 'image/jpeg'}
+    )
+
+    return f"https://yrnrhjvauknhlotoqpea.supabase.co/storage/v1/object/public/{BUCKET_NAME}/{file_name}"
+
+
 @router.post("/upload")
 async def upload_post_image(
-    file: UploadFile = File(...), 
+    file: UploadFile = File(...),
     current_user: int = Depends(oauth2.get_current_user)
 ):
     # 1. Dateigröße prüfen (max 5MB)
     MAX_SIZE = 15 * 1024 * 1024
-    print(f"Content-Type von Flutter: '{file.content_type}'") 
+    print(f"Content-Type von Flutter: '{file.content_type}'")
     contents = await file.read(MAX_SIZE + 1)
     if len(contents) > MAX_SIZE:
         raise HTTPException(status_code=400, detail="Datei zu groß! Max 5MB.")
 
     # 2. Content-Type prüfen
-    # Hinweis: Wenn Flutter den Content-Type nicht sendet, 
+    # Hinweis: Wenn Flutter den Content-Type nicht sendet,
     # wird dieser Check wieder fehlschlagen (Error 400).
     if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="Nur Bilder erlaubt!")
 
+    # 3. Den schweren Teil im Threadpool ausführen -> Event-Loop bleibt frei.
     try:
-        # 3. Pillow Verarbeitung
-        img = Image.open(io.BytesIO(contents))
-        img.verify() # Validieren
-        
-        # Nach verify() muss das Objekt neu geladen werden
-        img = Image.open(io.BytesIO(contents))
-
-        # Decompression Bomb Schutz
-        if img.width * img.height > 20_000_000:
-            raise HTTPException(status_code=400, detail="Bild hat zu viele Pixel!")
-
-        # 4. Resize & Kompression
-        img.thumbnail((1024, 1024))
-        if img.mode in ("RGBA", "P"): # Transparent-Support zu RGB konvertieren
-            img = img.convert("RGB")
-            
-        buffer = io.BytesIO()
-        img.save(buffer, format="JPEG", quality=85)
-        buffer.seek(0)
-
-        # 5. Upload zu Supabase
-        file_name = f"posts/{uuid.uuid4().hex}.jpg"
-        s3_client.upload_fileobj(
-            buffer, 
-            BUCKET_NAME, 
-            file_name, 
-            ExtraArgs={'ACL': 'public-read', 'ContentType': 'image/jpeg'}
-        )
-
-        url = f"https://yrnrhjvauknhlotoqpea.supabase.co/storage/v1/object/public/{BUCKET_NAME}/{file_name}"
-        return {"image_url": url}
-
+        url = await run_in_threadpool(_process_and_upload_image, contents)
+    except HTTPException:
+        raise  # echte Validierungsfehler (z.B. zu viele Pixel) durchlassen
     except Exception as e:
         print(f"Fehler beim Upload: {e}")
         raise HTTPException(status_code=500, detail="Bildverarbeitung fehlgeschlagen.")
+
+    return {"image_url": url}
     
 
 

@@ -163,3 +163,22 @@ class Report(Base):
     reported_user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     reason = Column(String, nullable=False) # z.B. "Spam", "Beleidigung", "Unangebracht"
     created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text('now()'))
+
+
+class UserKey(Base):
+    __tablename__ = 'user_keys'
+
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    public_key = Column(String, nullable=False)
+    updated_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text('now()'))
+
+
+class RefreshToken(Base):
+    __tablename__ = 'refresh_tokens'
+
+    id = Column(Integer, primary_key=True, nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    # Wir speichern NICHT den Token selbst, sondern seinen Hash (SHA-256).
+    token_hash = Column(String, nullable=False, unique=True)
+    expires_at = Column(TIMESTAMP(timezone=True), nullable=False)
+    created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text('now()'))
