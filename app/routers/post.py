@@ -18,7 +18,6 @@ router = APIRouter(
 
 
 
-
 S3_ENDPOINT = f'{settings.s3_endpoint}'
 S3_ACCESS_KEY = f'{settings.s3_access_key}'
 S3_SECRET_KEY = f'{settings.s3_secret_key}'
@@ -82,7 +81,7 @@ def _process_and_upload_image(contents: bytes) -> str:
         ExtraArgs={'ACL': 'public-read', 'ContentType': 'image/jpeg'}
     )
 
-    return f"https://yrnrhjvauknhlotoqpea.supabase.co/storage/v1/object/public/{BUCKET_NAME}/{file_name}"
+    return f"{settings.supabase_url}/storage/v1/object/public/{BUCKET_NAME}/{file_name}"
 
 
 @router.post("/upload")

@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     s3_secret_key: str
     s3_region: str
     s3_endpoint: str
+    supabase_url: str
 
     model_config = ConfigDict(env_file=".env")
 

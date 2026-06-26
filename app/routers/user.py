@@ -81,7 +81,7 @@ def _process_and_upload_image(contents: bytes) -> str:
         ExtraArgs={'ACL': 'public-read', 'ContentType': 'image/jpeg'}
     )
 
-    return f"https://yrnrhjvauknhlotoqpea.supabase.co/storage/v1/object/public/{BUCKET_NAME}/{file_name}"
+    return f"{settings.supabase_url}/storage/v1/object/public/{BUCKET_NAME}/{file_name}"
 
 
 
