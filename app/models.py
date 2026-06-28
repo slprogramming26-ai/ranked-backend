@@ -1,5 +1,5 @@
 from .database import Base
-from sqlalchemy import Column, Integer, String, Boolean, ForeignKey
+from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, UniqueConstraint, ForeignKeyConstraint
 from sqlalchemy.sql.sqltypes import TIMESTAMP, DATE
 from sqlalchemy.sql.expression import null, text
 from sqlalchemy.orm import relationship
@@ -118,8 +118,13 @@ class GroupChats(Base):
     creator_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text('now()'))
 
-    group_name = Column(String, nullable=True)  
+    group_name = Column(String, nullable=True)
     profile_picture = Column(String, nullable=True)
+
+    # "dirty"-Flag für Lazy Rekeying: Wird bei jeder Mitglieder-Änderung (Beitritt/
+    # Verlassen/Kick) auf True gesetzt. Der nächste Sender erzeugt dann eine neue
+    # Schlüssel-Epoche, verteilt sie und setzt das Flag zurück auf False.
+    needs_rekey = Column(Boolean, nullable=False, server_default='False')
 
 
 class GroupChatMembership(Base):
@@ -135,18 +140,31 @@ class GroupMessage(Base):
 
     __tablename__ = 'group_message'
 
-    # Eine Zeile pro Nachricht (Option A) — KEIN recipient_id mehr.
-    # Wer die Nachricht sehen darf, ergibt sich aus der Mitgliedschaft +
-    # joined_at (Mitglieder sehen nur, was nach ihrem Beitritt gesendet wurde).
     id = Column(Integer, primary_key=True, nullable=False)
     group_chat_id = Column(Integer, ForeignKey("group_chats.group_chat_id", ondelete="CASCADE"), nullable=False)
     sender_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     message = Column(String, nullable=False)
     created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text('now()'))
-    # Vom Client erzeugte UUID pro Nachricht (Idempotenz-/Dedup-Key).
-    # nullable=True, weil Altbestand keinen Key hat.
     client_msg_id = Column(String, nullable=True)
+    # Mit welcher Schlüssel-Epoche der Gruppe diese Nachricht verschlüsselt wurde.
+    key_version = Column(Integer, nullable=True)
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ['group_chat_id', 'key_version'],
+            ['group_chat_epochs.group_chat_id', 'group_chat_epochs.key_version'],
+            ondelete='CASCADE',
+        ),
+    )
 
+
+
+
+class GroupChatEpoch(Base):
+    __tablename__ = 'group_chat_epochs'
+    #epoche ist das akutelle schloss für gruppe group_chat id mit bestimmte schlüssel version
+    group_chat_id = Column(Integer, ForeignKey("group_chats.group_chat_id", ondelete="CASCADE"), primary_key=True, nullable=False)
+    key_version = Column(Integer, primary_key=True, nullable=False)
+    created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text('now()'))
 
 
 class Block(Base):
@@ -171,6 +189,36 @@ class UserKey(Base):
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
     public_key = Column(String, nullable=False)
     updated_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text('now()'))
+
+
+class GroupChatKey(Base):
+    __tablename__ = 'group_chat_keys'
+
+    # Eine Zeile = die verschlüsselte Kopie des Gruppenschlüssels (Version key_version)
+    # der Gruppe group_chat_id, bestimmt für das Mitglied recipient_id.
+    id = Column(Integer, primary_key=True, nullable=False)
+    group_chat_id = Column(Integer, ForeignKey("group_chats.group_chat_id", ondelete="CASCADE"), nullable=False)
+    # Epoche des Gruppenschlüssels. Steigt bei jedem Rekey (Beitritt/Kick/Verlassen) um 1.
+    # Eine neue Version erhält nur, wer zu diesem Zeitpunkt Mitglied ist -> keine History.
+    key_version = Column(Integer, nullable=False)
+    # Für welches Mitglied diese Kopie bestimmt ist.
+    recipient_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    # Der symmetrische Gruppenschlüssel, verschlüsselt mit dem Public Key des recipient.
+    # Der Server sieht den Klartext-Key nie.
+    encrypted_key = Column(String, nullable=False)
+    created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text('now()'))
+
+    # Pro Mitglied genau eine Kopie je Version.
+    # Zusätzlich: zusammengesetzter FK auf die Epochen-Tabelle, damit keine Schlüssel-
+    # Kopie auf eine nicht existierende Epoche zeigen kann.
+    __table_args__ = (
+        UniqueConstraint('group_chat_id', 'key_version', 'recipient_id', name='uq_group_key_version_recipient'),
+        ForeignKeyConstraint(
+            ['group_chat_id', 'key_version'],
+            ['group_chat_epochs.group_chat_id', 'group_chat_epochs.key_version'],
+            ondelete='CASCADE',
+        ),
+    )
 
 
 class RefreshToken(Base):

@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, status, HTTPException, Response
 from fastapi.security.oauth2 import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
+from typing import List
 from .. import database, schemas, models, utils, oauth2
 from ..database import get_dp
 
@@ -48,6 +49,9 @@ def join_group_chat(
     if already:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="already a member")
 
+    db.query(models.GroupChats).filter(
+        models.GroupChats.group_chat_id == group_chat_id,
+    ).update({"needs_rekey": True})
     db.add(models.GroupChatMembership(
         group_chat_id=group_chat_id,
         participant_id=current_user.id,
@@ -81,9 +85,96 @@ def leave_group_chat(
     if not membership:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not a member of this group")
 
+    db.query(models.GroupChats).filter(
+        models.GroupChats.group_chat_id == group_chat_id,
+    ).update({"needs_rekey": True})
+
     db.delete(membership)
     db.commit()
     return {"message": "left"}
+
+
+@router.delete("/group_chat/kick/{group_chat_id}/{user_id}")
+def kick_from_group(group_chat_id: int,
+                    user_id: int,
+    db: Session = Depends(get_dp),
+    current_user=Depends(oauth2.get_current_user),):
+
+    group = db.query(models.GroupChats).filter(
+        models.GroupChats.group_chat_id == group_chat_id,
+    ).first()
+    if not group:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"group chat {group_chat_id} not found")
+    
+    if group.creator_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+                             detail="You are not allowed to perform this action")
+
+    # Creator kann sich nicht selbst kicken -> sonst bliebe creator_id ohne Mitgliedschaft.
+    if user_id == group.creator_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="the creator cannot be kicked; delete the group instead")
+
+    member = db.query(models.GroupChatMembership
+                      ).filter(models.GroupChatMembership.group_chat_id == group_chat_id,
+                               models.GroupChatMembership.participant_id == user_id).first()
+    
+    if not member:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+              detail=f"user with id: {user_id} does not exist in this group")
+
+    
+    db.query(models.GroupChats).filter(
+        models.GroupChats.group_chat_id == group_chat_id,
+    ).update({"needs_rekey": True})
+    db.delete(member)
+    db.commit()
+    return {"message": f"user with id {user_id} successfully kicked"}
+    
+
+
+
+
+
+
+@router.get("/group_chat/{group_chat_id}/members", response_model=List[schemas.GroupMemberOut])
+def get_group_members(
+    group_chat_id: int,
+    db: Session = Depends(get_dp),
+    current_user=Depends(oauth2.get_current_user),
+):
+    group = db.query(models.GroupChats).filter(
+        models.GroupChats.group_chat_id == group_chat_id,
+    ).first()
+    if not group:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"group chat {group_chat_id} not found")
+
+    # Nur Mitglieder dürfen die Mitgliederliste sehen.
+    is_member = db.query(models.GroupChatMembership).filter(
+        models.GroupChatMembership.group_chat_id == group_chat_id,
+        models.GroupChatMembership.participant_id == current_user.id,
+    ).first()
+    if not is_member:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="not a member of this group")
+
+    # Mitgliedschaften mit den User-Daten joinen.
+    rows = db.query(
+        models.User.id, models.User.username, models.User.profile_picture_url,
+    ).join(
+        models.GroupChatMembership, models.GroupChatMembership.participant_id == models.User.id,
+    ).filter(
+        models.GroupChatMembership.group_chat_id == group_chat_id,
+    ).all()
+
+    # User.id heißt im Schema user_id -> einmal umbenennen.
+    return [
+        {"user_id": r.id, "username": r.username, "profile_picture_url": r.profile_picture_url}
+        for r in rows
+    ]
+
 
 
 @router.delete("/group_chat/{group_chat_id}")
@@ -101,6 +192,7 @@ def delete_group_chat(
     if group.creator_id != current_user.id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="only the creator can delete this group")
 
+    
     db.delete(group)
     db.commit()
     return {"message": "deleted"}

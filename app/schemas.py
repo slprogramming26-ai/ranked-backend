@@ -206,10 +206,13 @@ class ChatMessageIn(BaseModel):
 
 
 class GroupChatMessageIn(BaseModel):
-    """Group-Message vom Client. JSON: { "kind": "group", "to": <group_chat_id>, "message": "..." }"""
+    """Group-Message vom Client. JSON: { "kind": "group", "to": <group_chat_id>, "message": "...", "key_version": <int> }"""
     kind: Literal["group"]
     to: int  # group_chat_id
     message: str = Field(min_length=1, max_length=4096)
+    # Mit welcher Schlüssel-Epoche der Client die message verschlüsselt hat.
+    # Der Server prüft das gegen die aktuelle Epoche der Gruppe (siehe _prepare_group_send).
+    key_version: int
     client_msg_id: Optional[str] = None
 
     model_config = ConfigDict(extra="forbid")
@@ -242,6 +245,9 @@ class GroupChatMessageOut(BaseModel):
     sender_id: int
     message: str
     created_at: datetime
+    # Mit welcher Epoche die message verschlüsselt ist -> Empfänger weiß, welchen
+    # Schlüssel er zum Entschlüsseln nehmen muss.
+    key_version: int
     client_msg_id: Optional[str] = None
 
 class GroupMessageOut(BaseModel):
@@ -250,6 +256,8 @@ class GroupMessageOut(BaseModel):
     sender_id: int
     message: str
     created_at: datetime
+    # Optional, weil Altbestand aus der Klartext-Zeit keine Version hat.
+    key_version: Optional[int] = None
     client_msg_id: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
@@ -280,6 +288,14 @@ class GroupChatInformationOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class GroupMemberOut(BaseModel):
+    """Ein Mitglied einer Gruppe. user_id braucht das Frontend fürs Rekey
+    (Schlüssel pro Mitglied verschlüsseln), Name/Bild für die UI-Mitgliederliste."""
+    user_id: int
+    username: str
+    profile_picture_url: Optional[str] = None
+
+
 # E2EE
 
 
@@ -292,5 +308,34 @@ class PublicKeyOut(BaseModel):
     """Was wir zurückgeben, wenn jemand einen Schlüssel abfragt."""
     user_id: int
     public_key: str
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+# --- Gruppen-E2EE: Rekey / Schlüssel-Verteilung ---
+
+class GroupKeyCopy(BaseModel):
+    """Eine mit dem Public Key eines Mitglieds verschlüsselte Kopie des neuen
+    Gruppenschlüssels. Der Server sieht nur diesen Ciphertext, nie den Klartext-Key."""
+    recipient_id: int
+    encrypted_key: str = Field(min_length=1)
+
+
+class GroupRekeyUpload(BaseModel):
+    """Was der Client beim Rekey hochlädt: für JEDES aktuelle Mitglied eine Kopie
+    des neuen Gruppenschlüssels."""
+    keys: List[GroupKeyCopy] = Field(min_length=1)
+
+
+class GroupRekeyOut(BaseModel):
+    """Die neu angelegte Epoche. Der Client sendet danach mit dieser key_version."""
+    key_version: int
+
+
+class GroupKeyOut(BaseModel):
+    """Eine Schlüssel-Kopie, die ein Mitglied beim Abruf bekommt."""
+    group_chat_id: int
+    key_version: int
+    encrypted_key: str
 
     model_config = ConfigDict(from_attributes=True)

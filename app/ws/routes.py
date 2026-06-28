@@ -5,7 +5,7 @@ from jose import JWTError, jwt
 from pydantic import ValidationError
 from .. import models, schemas, oauth2
 from ..database import SessionLocal
-from .manager import manager, ChatError
+from .manager import manager, ChatError, RekeyRequired, KeyOutdated
 
 
 router = APIRouter()
@@ -125,9 +125,23 @@ async def _handle_group(websocket: WebSocket, user: models.User, raw: dict):
                 sender_id=user.id,
                 group_chat_id=incoming.to,
                 content=incoming.message,
+                key_version=incoming.key_version,
                 db=db,
                 client_msg_id=incoming.client_msg_id,
             )
+    # Reihenfolge wichtig: die Spezialfälle VOR dem generischen ChatError fangen.
+    except RekeyRequired:
+        # Auftrag an den Client: neuen Gruppenschlüssel erzeugen + verteilen, dann erneut senden.
+        await websocket.send_json({"kind": "rekey_required", "group_chat_id": incoming.to})
+        return
+    except KeyOutdated as e:
+        # Auftrag an den Client: aktuellen Schlüssel holen, neu verschlüsseln, erneut senden.
+        await websocket.send_json({
+            "kind": "key_outdated",
+            "group_chat_id": incoming.to,
+            "current_version": e.current_version,
+        })
+        return
     except ChatError as e:
         await websocket.send_json({"kind": "error", "detail": str(e)})
         return

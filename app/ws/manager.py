@@ -1,5 +1,6 @@
 from fastapi import WebSocket
 from typing import Dict
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from .. import models, schemas
 from fastapi.concurrency import run_in_threadpool
@@ -12,6 +13,23 @@ class ChatError(Exception):
     im WebSocket-Kontext nicht funktioniert (kein HTTP-Response möglich).
     Die Route fängt den hier, packt das in eine `kind: "error"`-Nachricht und
     schickt sie über den Socket zurück."""
+
+
+class RekeyRequired(ChatError):
+    """Gruppe ist dirty (needs_rekey) oder hat noch keine Epoche.
+    Kein echter Fehler, sondern ein Auftrag: der Client muss einen neuen
+    Gruppenschlüssel (Epoche +1) erzeugen, verteilen und das Flag löschen,
+    bevor er senden kann."""
+
+
+class KeyOutdated(ChatError):
+    """Der Client hat mit einer veralteten Epoche verschlüsselt (er ist hinterher).
+    Auftrag: aktuellen Schlüssel holen, neu verschlüsseln, erneut senden.
+    current_version teilt dem Client mit, welche Epoche jetzt gilt."""
+
+    def __init__(self, current_version: int):
+        super().__init__("key version outdated")
+        self.current_version = current_version
 
 
 async def _safe_send(socket: WebSocket, payload: dict) -> bool:
@@ -142,6 +160,7 @@ class ConnectionManager:
         sender_id: int,
         group_chat_id: int,
         content: str,
+        key_version: int,
         db: Session,
         client_msg_id: str | None = None,
     ) -> tuple:
@@ -158,10 +177,25 @@ class ConnectionManager:
         if is_member is None:
             raise ChatError("not a member of this group")
 
+        # Aktuelle Epoche = höchste key_version dieser Gruppe (None, wenn noch keine).
+        current_version = db.query(func.max(models.GroupChatEpoch.key_version)).filter(
+            models.GroupChatEpoch.group_chat_id == group_chat_id,
+        ).scalar()
+
+        # Türsteher-Logik (siehe Tabelle der drei Ausgänge):
+        # 1) dirty oder noch keine Epoche -> Client muss erst einen neuen Schlüssel verteilen.
+        if group.needs_rekey or current_version is None:
+            raise RekeyRequired("group needs a fresh key epoch before sending")
+        # 2) Client ist hinterher -> muss aktuellen Schlüssel holen und neu verschlüsseln.
+        if key_version != current_version:
+            raise KeyOutdated(current_version)
+        # 3) Version passt -> speichern.
+
         message = models.GroupMessage(
             group_chat_id=group_chat_id,
             sender_id=sender_id,
             message=content,
+            key_version=key_version,
             client_msg_id=client_msg_id,
         )
         db.add(message)
@@ -190,15 +224,14 @@ class ConnectionManager:
         sender_id: int,
         group_chat_id: int,
         content: str,
+        key_version: int,
         db: Session,
         client_msg_id: str | None = None,
     ) -> int:
         """Gruppen-Nachricht speichern und an alle ONLINE-Mitglieder (außer Sender) live verteilen.
 
         Return: Anzahl der LIVE ausgelieferten Empfänger. Offline-Mitglieder holen sich
-                die Nachricht später per REST ("seit Zeitstempel X").
-
-        Raised ChatError bei: Gruppe existiert nicht, Sender ist kein Mitglied."""
+                die Nachricht später per REST ("seit Zeitstempel X")."""
 
         # Phase 1: die komplette DB-Arbeit im Threadpool (ein Hop), gibt nur einfache Daten zurück.
         created_at, recipient_ids = await run_in_threadpool(
@@ -206,6 +239,7 @@ class ConnectionManager:
             sender_id,
             group_chat_id,
             content,
+            key_version,
             db,
             client_msg_id,
         )
@@ -216,6 +250,7 @@ class ConnectionManager:
             sender_id=sender_id,
             message=content,
             created_at=created_at,
+            key_version=key_version,
             client_msg_id=client_msg_id,
         )
         payload = out.model_dump(mode="json")
@@ -223,7 +258,7 @@ class ConnectionManager:
         delivered_live = 0
         dead_sockets = []   # User deren Socket beim Send gestorben ist → aus Map raus
 
-        # recipient_ids ist eine Liste von participant_ids (ints), keine ORM-Objekte.
+        # recipient_ids ist eine Liste von participant_ids (ints).
         for uid in recipient_ids:
             socket = self.active_connections.get(uid)
             if socket is None:
