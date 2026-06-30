@@ -16,6 +16,9 @@ class Settings(BaseSettings):
     s3_region: str
     s3_endpoint: str
     supabase_url: str
+    # Secret, mit dem der externe Scheduler den Story-Cleanup-Endpoint aufruft.
+    # Muss als Header "X-Cleanup-Secret" mitgeschickt werden.
+    story_cleanup_secret: str = "change-me"
 
     model_config = ConfigDict(env_file=".env")
 

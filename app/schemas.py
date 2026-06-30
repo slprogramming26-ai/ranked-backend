@@ -101,6 +101,21 @@ class PostOut(BaseModel):
 
 
 # =========================================================
+# Stories
+# =========================================================
+
+class StoryOut(BaseModel):
+    id: int
+    owner_id: int
+    image_url: str
+    created_at: datetime
+    owner: UserOut
+    is_mine: bool
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+# =========================================================
 # Votes & Follows
 # =========================================================
 

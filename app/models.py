@@ -230,3 +230,14 @@ class RefreshToken(Base):
     token_hash = Column(String, nullable=False, unique=True)
     expires_at = Column(TIMESTAMP(timezone=True), nullable=False)
     created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text('now()'))
+
+
+class Story(Base):
+    __tablename__ = 'stories'
+
+    id = Column(Integer, primary_key=True, nullable=False)
+    owner_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    image_url = Column(String, nullable=False)
+    created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text('now()'))
+
+    owner = relationship("User")
