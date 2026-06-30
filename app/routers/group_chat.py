@@ -93,6 +93,23 @@ def leave_group_chat(
     db.commit()
     return {"message": "left"}
 
+@router.get("/group_chat/my", response_model=List[schemas.GroupChatInformationOut])
+def get_all_my_groups(
+    db: Session = Depends(get_dp),
+    current_user=Depends(oauth2.get_current_user),
+):
+    all_my_groups = db.query(
+        models.GroupChats.group_chat_id,
+        models.GroupChats.group_name,
+        models.GroupChats.profile_picture,
+    ).join(
+        models.GroupChatMembership,
+        models.GroupChatMembership.group_chat_id == models.GroupChats.group_chat_id,
+    ).filter(
+        models.GroupChatMembership.participant_id == current_user.id,
+    ).all()
+
+    return all_my_groups
 
 @router.delete("/group_chat/kick/{group_chat_id}/{user_id}")
 def kick_from_group(group_chat_id: int,
