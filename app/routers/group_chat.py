@@ -60,6 +60,7 @@ def join_group_chat(
     return {"message": "joined"}
 
 
+
 @router.delete("/group_chat/leave/{group_chat_id}")
 def leave_group_chat(
     group_chat_id: int,

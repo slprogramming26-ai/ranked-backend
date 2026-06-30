@@ -135,8 +135,27 @@ def get_posts(db: Session = Depends(get_dp),
         .limit(limit) \
         .offset(skip) \
         .all()
+    
+    post_ids = [post.id for post, _ in posts]
+    liked_ids = {
+        row.post_id
+        for row in db.query(models.Votes.post_id).filter(
+            models.Votes.user_id == current_user.id,
+            models.Votes.post_id.in_(post_ids),
+        ).all()
+    }
 
-    return [{"post": post, "votes": votes} for post, votes in posts]
+
+
+    return [
+        {
+            "post": post,
+            "votes": votes,
+            "is_mine": post.owner_id == current_user.id,
+            "is_liked": post.id in liked_ids,
+        }
+        for post, votes in posts
+    ]
 
 @router.post("/",status_code=status.HTTP_201_CREATED,response_model= schemas.Post)
 def create_posts(post: schemas.PostCreate, db: Session = Depends(get_dp), current_user: int = Depends(oauth2.get_current_user)):
@@ -158,12 +177,20 @@ def get_post(id: int, response: Response, db: Session = Depends(get_dp), respons
     ).group_by(models.Post.id).filter(models.Post.id == id).first()
 
 
-
     if not post:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Post with id: {id} was not found")
     
-    return {"post": post[0], "votes": post[1]}
-
+    liked = db.query(models.Votes).filter(
+        models.Votes.user_id == current_user.id,
+        models.Votes.post_id == post[0].id,
+    ).first() is not None
+    
+    return {
+        "post": post[0],
+        "votes": post[1],
+        "is_mine": post[0].owner_id == current_user.id,
+        "is_liked": liked,
+    }
 
 @router.delete("/{id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_post(id: int, db: Session = Depends(get_dp), current_user: int = Depends(oauth2.get_current_user)):

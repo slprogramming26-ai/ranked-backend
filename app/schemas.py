@@ -95,7 +95,8 @@ class Post(PostBase):
 class PostOut(BaseModel):
     post: Post
     votes: int
-
+    is_mine: bool
+    is_liked: bool
     model_config = ConfigDict(from_attributes=True)
 
 
