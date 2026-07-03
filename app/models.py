@@ -179,7 +179,12 @@ class Report(Base):
     id = Column(Integer, primary_key=True, nullable=False)
     reporter_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     reported_user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    # Was wurde gemeldet? Genau eines gesetzt = Post/Story/Comment-Report, alle NULL = User selbst (Name/Profilbild)
+    post_id = Column(Integer, ForeignKey("posts.id", ondelete="CASCADE"), nullable=True)
+    story_id = Column(Integer, ForeignKey("stories.id", ondelete="CASCADE"), nullable=True)
+    comment_id = Column(Integer, ForeignKey("comments.id", ondelete="CASCADE"), nullable=True)
     reason = Column(String, nullable=False) # z.B. "Spam", "Beleidigung", "Unangebracht"
+    status = Column(String, nullable=False, server_default=text("'pending'")) # pending / dismissed / action_taken
     created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text('now()'))
 
 

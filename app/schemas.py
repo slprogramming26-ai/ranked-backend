@@ -130,6 +130,18 @@ class Follow(BaseModel):
 
 
 # =========================================================
+# Reports
+# =========================================================
+
+class ReportCreate(BaseModel):
+    """Was der Melder schickt: nur den Grund. WAS gemeldet wird, steht im URL-Pfad
+    (/report/post/{id} usw.), den Rest (Owner etc.) leitet der Server selbst ab."""
+    reason: str = Field(min_length=1, max_length=500)
+
+    model_config = ConfigDict(extra="forbid")
+
+
+# =========================================================
 # Comments
 # =========================================================
 
@@ -143,6 +155,7 @@ class CreateComment(CommentBase):
 
 
 class CommentOut(BaseModel):
+    id: int  # braucht das Frontend, um den Kommentar melden zu können (/report/comment/{id})
     username: str
     post_id: int
     comment: str

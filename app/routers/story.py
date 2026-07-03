@@ -143,9 +143,19 @@ def get_stories(
     # 2. Nur Stories, die jünger als STORY_LIFETIME (1 Tag) sind.
     cutoff = datetime.now(timezone.utc) - STORY_LIFETIME
 
+    # 3. Stufe B vom Report-System: Stories, die ICH gemeldet habe, sehe ich nicht mehr.
+    reported_story_ids = [
+        row.story_id
+        for row in db.query(models.Report.story_id).filter(
+            models.Report.reporter_id == current_user.id,
+            models.Report.story_id.isnot(None),
+        ).all()
+    ]
+
     stories = db.query(models.Story).filter(
         models.Story.owner_id.in_(visible_owner_ids),
         models.Story.created_at >= cutoff,
+        models.Story.id.notin_(reported_story_ids),
     ).order_by(models.Story.created_at.desc()).all()
 
     return [

@@ -17,7 +17,7 @@ def create_comment(comment: schemas.CreateComment,db: Session = Depends(get_dp),
     db.add(new_comment)
     db.commit()
     db.refresh(new_comment)
-    return {'comment': new_comment.comment, 'username': current_user.username, 'post_id': new_comment.post_id}
+    return {'id': new_comment.id, 'comment': new_comment.comment, 'username': current_user.username, 'post_id': new_comment.post_id}
 
 @router.get("/{id}", response_model=List[schemas.CommentOut])
 def get_comments(
@@ -34,10 +34,20 @@ def get_comments(
             detail=f"Post with id: {id} was not found"
         )
 
+    # Stufe B vom Report-System: Kommentare, die ICH gemeldet habe, sehe ich nicht mehr.
+    reported_comment_ids = [
+        row.comment_id
+        for row in db.query(models.Report.comment_id).filter(
+            models.Report.reporter_id == current_user.id,
+            models.Report.comment_id.isnot(None),
+        ).all()
+    ]
+
     # Kommentare holen
     comments = db.query(models.Comments, models.User.username)\
     .join(models.User, models.User.id == models.Comments.user_id)\
     .filter(models.Comments.post_id == id)\
+    .filter(models.Comments.id.notin_(reported_comment_ids))\
     .all()
-    
-    return [{"comment": comment.comment, "username": username, "post_id": comment.post_id} for comment, username in comments]
+
+    return [{"id": comment.id, "comment": comment.comment, "username": username, "post_id": comment.post_id} for comment, username in comments]

@@ -127,10 +127,21 @@ def get_posts(db: Session = Depends(get_dp),
               skip: int = 0, 
               search: Optional[str] = ""):
 
+    # Stufe B vom Report-System: Posts, die ICH gemeldet habe, sehe ich nicht mehr.
+    # post_id.isnot(None) schließt User-Reports aus (die haben post_id = NULL).
+    reported_post_ids = [
+        row.post_id
+        for row in db.query(models.Report.post_id).filter(
+            models.Report.reporter_id == current_user.id,
+            models.Report.post_id.isnot(None),
+        ).all()
+    ]
+
     posts = db.query(models.Post, func.count(models.Votes.post_id).label("votes")) \
         .join(models.Votes, models.Votes.post_id == models.Post.id, isouter=True) \
         .group_by(models.Post.id) \
         .filter(models.Post.title.contains(search)) \
+        .filter(models.Post.id.notin_(reported_post_ids)) \
         .order_by(models.Post.created_at.desc()) \
         .limit(limit) \
         .offset(skip) \
