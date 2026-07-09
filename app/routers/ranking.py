@@ -10,6 +10,7 @@ from sqlalchemy import func
 from .. import models, schemas, oauth2
 from ..database import get_dp
 from ..ranking_config import SWIPE_POINTS
+from ..xp_config import XP_PER_SESSION, XP_PER_POINT_RECEIVED, STREAK_MILESTONE_BONUS
 from datetime import datetime, timedelta, timezone, date
 
 
@@ -133,6 +134,27 @@ def swipe_session(
             points=pts
         ))
 
+    # --- XP & Streak (Phase 1.3) ---
+    # 1) Streak des BEWERTERS fortschreiben. last_swipe_date = der TAG der letzten
+    #    abgeschlossenen Session. War die gestern -> Streak +1, sonst faengt er wieder
+    #    bei 1 an. Ein zweiter Lauf am selben Tag ist durch already_swiped oben schon
+    #    ausgeschlossen, deshalb muss der Fall "== heute" hier nicht behandelt werden.
+    yesterday = today - timedelta(days=1)
+    if current_user.last_swipe_date == yesterday:
+        current_user.streak_count += 1
+    else:
+        current_user.streak_count = 1
+    current_user.last_swipe_date = today
+
+    # 2) XP fuer den BEWERTER: Grund-XP fuers Abschliessen + evtl. Streak-Meilenstein
+    #    (get liefert 0, wenn der neue Streak-Wert kein Meilenstein 7/30/100 ist).
+    xp_gained = XP_PER_SESSION + STREAK_MILESTONE_BONUS.get(current_user.streak_count, 0)
+    current_user.xp += xp_gained
+
+    # 3) XP fuer den BEWERTETEN: 1 XP pro erhaltenem Punkt, sofort gutgeschrieben.
+    #    daily_target.target_user ist der oben validierte Ziel-User (gleiche Session).
+    daily_target.target_user.xp += total_points * XP_PER_POINT_RECEIVED
+
     try:
         db.add_all(rows)
         db.commit()
@@ -140,11 +162,14 @@ def swipe_session(
         db.rollback()
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not save swipes")
 
+
     return {
         "success": True,
         "total_points": total_points,
         "breakdown": breakdown,
-        "message": f"+{total_points} Punkte!"
+        "message": f"+{total_points} Punkte!",
+        "xp_gained": xp_gained,
+        "streak": current_user.streak_count,
     }
     
 

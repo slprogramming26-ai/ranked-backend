@@ -10,6 +10,7 @@ import uuid
 from sqlalchemy import func
 from .. import models, schemas, oauth2,utils
 from ..database import get_dp
+from ..xp_config import get_league
 from .post import delete_s3_object as delete_post_image
 
 
@@ -156,7 +157,10 @@ def get_current_user(current_user: int = Depends(oauth2.get_current_user),  db: 
             "profile_picture_url": current_user.profile_picture_url,
             "biography": current_user.biography,
             "ranking_enabled": current_user.ranking_enabled,
-            "follower_count": follower_count
+            "follower_count": follower_count,
+            "xp": current_user.xp,
+            "streak_count": current_user.streak_count,
+            "league": get_league(current_user.xp),
             }
 
 @router.get("/search", response_model=List[schemas.GetUserOut])
@@ -218,7 +222,10 @@ def get_user(id: int, current_user: int = Depends(oauth2.get_current_user),  db:
             "biography": target_user.biography,
             "ranking_enabled": target_user.ranking_enabled,
             "follower_count": follower_count,
-            "is_followed": following
+            "is_followed": following,
+            "xp": target_user.xp,
+            "streak_count": target_user.streak_count,
+            "league": get_league(target_user.xp),
             }
 
 

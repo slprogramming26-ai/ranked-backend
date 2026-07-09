@@ -32,6 +32,17 @@ class UserDetails(BaseModel):
     ranking_enabled: Optional[bool] = None
 
 
+class LeagueOut(BaseModel):
+    """Liga-Fortschritt, berechnet aus der XP-Summe (siehe xp_config.get_league).
+    Genug fuer Ring + Fortschrittsbalken: 'Gold · 400/2000 · noch 1600 bis Platin'."""
+    league: str
+    tier: int
+    next_league: Optional[str] = None
+    xp_into_league: int
+    league_span: int
+    xp_for_next: int
+
+
 class GetUserOut(BaseModel):
     id: int
     email: Optional[EmailStr] = None
@@ -43,6 +54,11 @@ class GetUserOut(BaseModel):
     ranking_enabled: bool
     follower_count: Optional[int] = None
     is_followed: Optional[bool] = None
+    # Gamification. Optional, weil /users/search dieselbe Schema-Klasse nutzt,
+    # dort aber (bewusst) keine Liga/XP mitliefert -> bleibt dann None.
+    xp: Optional[int] = None
+    streak_count: Optional[int] = None
+    league: Optional[LeagueOut] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -186,6 +202,10 @@ class SwipeSessionOut(BaseModel):
         description="Punkte aufgeschlüsselt nach Flag: {None: X, engagement: Y, creativity: Z, productivity: W}"
     )
     message: Optional[str] = None
+    # XP, die der BEWERTER fuer diese Session bekommt (Grund-XP + evtl. Streak-Bonus)
+    xp_gained: int = Field(ge=0)
+    # Neuer Streak-Stand des Bewerters nach dieser Session (fuer die "🔥 x Tage"-UI)
+    streak: int = Field(ge=0)
 
     model_config = ConfigDict(extra="forbid")
 

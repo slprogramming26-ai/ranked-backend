@@ -34,6 +34,9 @@ class User(Base):
     biography = Column(String, nullable= True)
     profile_picture_url = Column(String, nullable= True)
     ranking_enabled = Column(Boolean, server_default='False', nullable=False)
+    xp = Column(Integer, nullable=False, server_default=text('0'))
+    streak_count = Column(Integer, nullable=False, server_default=text('0'))
+    last_swipe_date = Column(DATE, nullable=True)
 
 
 
