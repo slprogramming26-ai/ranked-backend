@@ -1,6 +1,5 @@
 from fastapi import FastAPI, Response, status, HTTPException, Depends, APIRouter, UploadFile, File
 from sqlalchemy.orm import Session
-from typing import List, Optional
 from PIL import Image
 import io
 import boto3
@@ -173,7 +172,7 @@ def swipe_session(
     }
     
 
-@router.get("/leaderboard", response_model=List[schemas.LeaderboardEntry])
+@router.get("/leaderboard", response_model=schemas.LeaderboardOut)
 def get_leaderboard(db: Session = Depends(get_dp), current_user: models.User = Depends(oauth2.get_current_user)):
     today = datetime.now(timezone.utc).date()
 
@@ -193,7 +192,7 @@ def get_leaderboard(db: Session = Depends(get_dp), current_user: models.User = D
      .limit(7) \
      .all()
 
-    return [
+    entries = [
         {
             "target_user_id": row.target_user_id,
             "username": row.username,
@@ -203,5 +202,43 @@ def get_leaderboard(db: Session = Depends(get_dp), current_user: models.User = D
         }
         for row in scores
     ]
+
+    # --- "Du"-Zeile (Phase 2) ---
+    # Punkte pro User HEUTE als wiederverwendbare Subquery: eine Zeile je bewertetem
+    # User mit seiner Punktsumme. Basis fuer Rang UND Abstand nach oben.
+    per_user = db.query(
+        models.Post.owner_id.label("uid"),
+        func.sum(models.RankingScores.points).label("pts"),
+    ).join(models.Post, models.Post.id == models.RankingScores.post_id) \
+     .filter(func.date(models.RankingScores.created_at) == today) \
+     .group_by(models.Post.owner_id).subquery()
+
+    # Meine heute erhaltenen Punkte (0, wenn mich heute niemand bewertet hat ->
+    # dann fehlt meine Zeile in per_user und scalar() liefert None).
+    my_points = db.query(per_user.c.pts) \
+        .filter(per_user.c.uid == current_user.id).scalar()
+    my_points = int(my_points or 0)
+
+
+    # Rang = Anzahl User mit MEHR Punkten als ich, + 1. (Bei Gleichstand teilt man
+    # sich denselben Rang; wer 0 hat, landet hinter allen, die heute Punkte haben.)
+    higher_count = db.query(func.count()).select_from(per_user) \
+        .filter(per_user.c.pts > my_points).scalar()
+    my_rank = int(higher_count) + 1
+
+    # Abstand zum naechsthoeheren: die kleinste Punktzahl, die groesser ist als meine,
+    # minus meine. None -> es gibt niemanden ueber mir -> ich bin #1 -> 0.
+    next_up = db.query(func.min(per_user.c.pts)) \
+        .filter(per_user.c.pts > my_points).scalar()
+    points_to_next = int(next_up - my_points) if next_up is not None else 0
+
+    return {
+        "entries": entries,
+        "me": {
+            "my_rank": my_rank,
+            "my_points": my_points,
+            "points_to_next": points_to_next,
+        },
+    }
 
 

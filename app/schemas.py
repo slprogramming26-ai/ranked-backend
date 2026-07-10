@@ -220,6 +220,20 @@ class LeaderboardEntry(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+
+class LeaderboardMe(BaseModel):
+    """Die 'Du'-Zeile: der eigene Stand, auch wenn man nicht in den Top 7 ist."""
+    my_rank: int                 # eigener Platz heute (1 = Tagessieger)
+    my_points: int               # heute erhaltene Punkte
+    points_to_next: int          # Punkte-Abstand zum naechsthoeheren (0 = schon #1)
+
+
+class LeaderboardOut(BaseModel):
+    """Kompletter Leaderboard-Response: Top-Liste + eigene Zeile in einem Request."""
+    entries: List[LeaderboardEntry]
+    me: LeaderboardMe
+
+
 class MyTargetOut(BaseModel):
     user_data: UserOut
     posts: List[Post]
