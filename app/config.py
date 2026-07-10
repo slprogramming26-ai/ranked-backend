@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     # Secret, mit dem der externe Scheduler den Story-Cleanup-Endpoint aufruft.
     # Muss als Header "X-Cleanup-Secret" mitgeschickt werden.
     story_cleanup_secret: str = "change-me"
+    ranking_job_secret: str = "change-me"
 
     model_config = ConfigDict(env_file=".env")
 

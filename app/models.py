@@ -86,6 +86,15 @@ class RankingScores(Base):
     post = relationship("Post")
 
 
+
+class DailyBonusLog(Base):
+    __tablename__ = 'daily_bonus_log'
+
+    date = Column(DATE, primary_key=True, nullable=False)
+    processed_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text('now()'))
+    awarded_count = Column(Integer, nullable=False, server_default=text('0'))
+
+
 class Follows(Base):
 
     __tablename__ = 'follows'

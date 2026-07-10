@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Response, status, HTTPException, Depends, APIRouter, UploadFile, File
+from fastapi import FastAPI, Response, status, HTTPException, Depends, APIRouter, UploadFile, File, Header
 from sqlalchemy.orm import Session
 from PIL import Image
 import io
@@ -9,8 +9,9 @@ from sqlalchemy import func
 from .. import models, schemas, oauth2
 from ..database import get_dp
 from ..ranking_config import SWIPE_POINTS
-from ..xp_config import XP_PER_SESSION, XP_PER_POINT_RECEIVED, STREAK_MILESTONE_BONUS
+from ..xp_config import XP_PER_SESSION, XP_PER_POINT_RECEIVED, STREAK_MILESTONE_BONUS, placement_bonus_for_rank
 from datetime import datetime, timedelta, timezone, date
+from typing import Optional
 
 
 router = APIRouter(
@@ -240,5 +241,54 @@ def get_leaderboard(db: Session = Depends(get_dp), current_user: models.User = D
             "points_to_next": points_to_next,
         },
     }
+
+
+@router.post("/end_of_day")
+def end_of_day_bonus(
+    day: Optional[date] = None,
+    db: Session = Depends(get_dp),
+    x_ranking_job_secret: Optional[str] = Header(default=None),
+):
+    """Vergibt Platzierungs-Boni fuer einen abgeschlossenen Tag. Wird NICHT von
+    Usern aufgerufen, sondern vom externen Scheduler kurz nach Mitternacht.
+    Geschuetzt durch Header-Secret, kein Login-Token (wie Story-Cleanup)."""
+    if x_ranking_job_secret != settings.ranking_job_secret:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid ranking job secret")
+
+    target_day = day or (datetime.now(timezone.utc).date() - timedelta(days=1))
+
+    already_done = db.query(models.DailyBonusLog).filter(
+        models.DailyBonusLog.date == target_day
+    ).first()
+    if already_done:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Bonus for this day was already processed")
+
+    per_user = db.query(
+        models.Post.owner_id.label("uid"),
+        func.sum(models.RankingScores.points).label("pts"),
+    ).join(models.Post, models.Post.id == models.RankingScores.post_id) \
+     .filter(func.date(models.RankingScores.created_at) == target_day) \
+     .group_by(models.Post.owner_id) \
+     .order_by(func.sum(models.RankingScores.points).desc()) \
+     .all()
+
+    awarded_count = 0
+    for rank, row in enumerate(per_user, start=1):
+        bonus = placement_bonus_for_rank(rank)
+        if bonus == 0:
+            break  # per_user ist nach Punkten absteigend sortiert -> alle weiteren Raenge sind auch 0
+        user = db.query(models.User).filter(models.User.id == row.uid).first()
+        user.xp += bonus
+        awarded_count += 1
+
+    db.add(models.DailyBonusLog(date=target_day, awarded_count=awarded_count))
+
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not save bonuses")
+
+    return {"awarded": awarded_count, "date": target_day}
 
 

@@ -104,3 +104,17 @@ def get_league(xp: int) -> dict:
         "league_span": next_threshold - current_threshold,
         "xp_for_next": next_threshold - xp,
     }
+
+
+def placement_bonus_for_rank(rank: int) -> int:
+    """Rechnet aus einem Tagesrang (1 = bester) den Platzierungs-Bonus aus.
+
+    PLACEMENT_BONUS ist "Grenze -> Bonus". Wir gehen die Grenzen aufsteigend
+    durch und nehmen den Bonus der ERSTEN Grenze, die der Rang noch erreicht.
+    Kein Treffer (z.B. Rang 11) -> 0.
+    """
+    for threshold in sorted(PLACEMENT_BONUS):
+        if rank <= threshold:
+            return PLACEMENT_BONUS[threshold]
+    return 0
+
