@@ -18,4 +18,4 @@ def get_dp():
     try:
         yield db
     finally:
-        db.close()
+        db.close()       

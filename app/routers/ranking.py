@@ -155,6 +155,16 @@ def swipe_session(
     #    daily_target.target_user ist der oben validierte Ziel-User (gleiche Session).
     daily_target.target_user.xp += total_points * XP_PER_POINT_RECEIVED
 
+
+    # --- Activity fuers Target (Phase 4.2) ---
+    # Eine aggregierte Meldung pro Session, nicht pro einzelnem Swipe.
+    rows.append(models.Activity(
+        user_id=session.target_user_id,
+        type="rated",
+        payload=total_points,
+    ))
+
+
     try:
         db.add_all(rows)
         db.commit()
@@ -290,5 +300,13 @@ def end_of_day_bonus(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not save bonuses")
 
     return {"awarded": awarded_count, "date": target_day}
+
+
+@router.get("/activity", response_model=list[schemas.ActivityOut])
+def get_activity(db: Session = Depends(get_dp), current_user: models.User = Depends(oauth2.get_current_user)):
+    return db.query(models.Activity).filter(
+        models.Activity.user_id == current_user.id
+    ).order_by(models.Activity.created_at.desc()).limit(30).all()
+
 
 

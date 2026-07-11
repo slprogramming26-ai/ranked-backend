@@ -43,6 +43,7 @@ class LeagueOut(BaseModel):
     xp_for_next: int
 
 
+
 class GetUserOut(BaseModel):
     id: int
     email: Optional[EmailStr] = None
@@ -232,6 +233,14 @@ class LeaderboardOut(BaseModel):
     """Kompletter Leaderboard-Response: Top-Liste + eigene Zeile in einem Request."""
     entries: List[LeaderboardEntry]
     me: LeaderboardMe
+
+class ActivityOut(BaseModel):
+    type: str
+    payload: int
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
 
 
 class MyTargetOut(BaseModel):

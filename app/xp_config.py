@@ -11,6 +11,8 @@ Alle Werte hier sind bewusst an EINER Stelle, damit man am Spiel-Balancing
 drehen kann, ohne die Endpoint-Logik anzufassen.
 """
 
+from datetime import datetime, timedelta, timezone
+
 # =========================================================
 # XP-Quellen
 # =========================================================
@@ -104,6 +106,24 @@ def get_league(xp: int) -> dict:
         "league_span": next_threshold - current_threshold,
         "xp_for_next": next_threshold - xp,
     }
+
+
+def get_effective_streak(streak_count: int, last_swipe_date) -> int:
+    """Rechnet aus dem rohen DB-Streak den tatsaechlich gueltigen Streak aus.
+
+    streak_count wird nur beim Session-Abschluss aktualisiert (siehe ranking.py),
+    ein toter Streak (letzter Swipe vor mehr als einem Tag) steht also einfach
+    weiter in der DB, bis der User das naechste Mal swiped. Fuers Anzeigen muessen
+    wir das hier live pruefen: last_swipe_date < gestern -> Streak ist abgelaufen -> 0.
+    """
+    if last_swipe_date is None:
+        return 0
+
+    yesterday = datetime.now(timezone.utc).date() - timedelta(days=1)
+    if last_swipe_date < yesterday:
+        return 0
+
+    return streak_count
 
 
 def placement_bonus_for_rank(rank: int) -> int:

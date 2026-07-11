@@ -95,6 +95,17 @@ class DailyBonusLog(Base):
     awarded_count = Column(Integer, nullable=False, server_default=text('0'))
 
 
+class Activity(Base):
+    __tablename__ = 'activities'
+
+    id = Column(Integer, primary_key=True, nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)  # Empfänger
+    type = Column(String, nullable=False)  # "rated" (später auch "placement"/"streak"/"badge")
+    payload = Column(Integer, nullable=False)  # z.B. erhaltene Punkte bei "rated"
+    created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text('now()'))
+
+
+
 class Follows(Base):
 
     __tablename__ = 'follows'
