@@ -3,6 +3,24 @@ from pydantic import BaseModel, ConfigDict, EmailStr, Field
 from typing import Optional, Literal, List
 
 
+
+
+# =========================================================
+# Locations
+# =========================================================
+
+class LocationOut(BaseModel):
+    id: int
+    name: str
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class LocationBulkCreate(BaseModel):
+    names: List[str]
+
+
+
 # =========================================================
 # User & Auth
 # =========================================================
@@ -30,6 +48,8 @@ class UserDetails(BaseModel):
     profile_picture_url: Optional[str] = None
     biography: Optional[str] = None
     ranking_enabled: Optional[bool] = None
+    location_id: Optional[int] = None
+
 
 
 class LeagueOut(BaseModel):
@@ -52,6 +72,7 @@ class GetUserOut(BaseModel):
     vibe_factor_2: Optional[str] = None
     profile_picture_url: Optional[str] = None
     biography: Optional[str] = None
+    location: Optional[LocationOut] = None
     ranking_enabled: bool
     follower_count: Optional[int] = None
     is_followed: Optional[bool] = None
@@ -83,6 +104,10 @@ class TokenData(BaseModel):
     id: int
 
 
+
+
+
+
 # =========================================================
 # Posts
 # =========================================================
@@ -105,6 +130,8 @@ class Post(PostBase):
     owner: UserOut
     image_url: Optional[str] = None
     flag: Optional[str] = None
+    location: Optional[LocationOut] = None
+
 
     model_config = ConfigDict(from_attributes=True)
 

@@ -5,6 +5,15 @@ from sqlalchemy.sql.expression import null, text
 from sqlalchemy.orm import relationship
 from .database import Base
 
+
+class Location(Base):
+    __tablename__ = 'locations'
+
+    id = Column(Integer, primary_key=True, nullable=False)
+    name = Column(String, nullable=False, unique=True)
+
+
+
 class Post(Base):
     __tablename__ = 'posts'
 
@@ -16,8 +25,11 @@ class Post(Base):
     owner_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable = False )
     image_url = Column(String, nullable=True)
     flag = Column(String, nullable= True)  # "engagement" | "creativity" | "productivity" | None — Punkte-Multiplikator
+    location_id = Column(Integer, ForeignKey("locations.id", ondelete="SET NULL"), nullable=True)
+
 
     owner = relationship("User")
+    location = relationship("Location")
 
 
 class User(Base):
@@ -37,6 +49,10 @@ class User(Base):
     xp = Column(Integer, nullable=False, server_default=text('0'))
     streak_count = Column(Integer, nullable=False, server_default=text('0'))
     last_swipe_date = Column(DATE, nullable=True)
+    location_id = Column(Integer, ForeignKey("locations.id", ondelete="SET NULL"), nullable=True)
+    location = relationship("Location")
+
+
 
 
 

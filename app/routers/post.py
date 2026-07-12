@@ -7,9 +7,11 @@ import io
 import boto3
 from ..config import settings
 import uuid
-from sqlalchemy import func
+from sqlalchemy import func, case, or_
 from .. import models, schemas, oauth2
 from ..database import get_dp
+from ..ranking_config import FEED_VOTE_WEIGHT, FEED_AGE_PENALTY_PER_HOUR, FEED_FOLLOW_BONUS, FEED_VIBE_BONUS
+
 
 router = APIRouter(
     prefix="/posts",
@@ -137,15 +139,46 @@ def get_posts(db: Session = Depends(get_dp),
         ).all()
     ]
 
-    posts = db.query(models.Post, func.count(models.Votes.post_id).label("votes")) \
-        .join(models.Votes, models.Votes.post_id == models.Post.id, isouter=True) \
-        .group_by(models.Post.id) \
-        .filter(models.Post.title.contains(search)) \
-        .filter(models.Post.id.notin_(reported_post_ids)) \
-        .order_by(models.Post.created_at.desc()) \
-        .limit(limit) \
-        .offset(skip) \
-        .all()
+    vote_count = func.count(models.Votes.post_id)
+    age_hours = func.extract('epoch', func.now() - models.Post.created_at) / 3600
+    i_follow_owner = db.query(models.Follows).filter(
+        models.Follows.follower_id == current_user.id,
+        models.Follows.followee_id == models.Post.owner_id,
+    ).exists()
+
+    follow_bonus = case((i_follow_owner, FEED_FOLLOW_BONUS), else_=0)
+
+    my_vibes = [current_user.vibe_factor_1, current_user.vibe_factor_2]
+
+    same_vibes = db.query(models.User).filter(
+        models.User.id == models.Post.owner_id,
+        or_(
+            models.User.vibe_factor_1.in_(my_vibes),
+            models.User.vibe_factor_2.in_(my_vibes),
+        ),
+    ).exists()
+
+    category_bonus = case((same_vibes, FEED_VIBE_BONUS), else_=0)
+
+    score = FEED_VOTE_WEIGHT * vote_count \
+          - FEED_AGE_PENALTY_PER_HOUR * age_hours \
+          + follow_bonus \
+          + category_bonus
+
+
+
+
+
+    posts = db.query(models.Post, vote_count.label("votes")) \
+    .join(models.Votes, models.Votes.post_id == models.Post.id, isouter=True) \
+    .group_by(models.Post.id) \
+    .filter(models.Post.title.contains(search)) \
+    .filter(models.Post.id.notin_(reported_post_ids)) \
+    .order_by(score.desc(), models.Post.created_at.desc()) \
+    .limit(limit) \
+    .offset(skip) \
+    .all()
+
     
     post_ids = [post.id for post, _ in posts]
     liked_ids = {

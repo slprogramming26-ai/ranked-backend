@@ -20,6 +20,8 @@ class Settings(BaseSettings):
     # Muss als Header "X-Cleanup-Secret" mitgeschickt werden.
     story_cleanup_secret: str = "change-me"
     ranking_job_secret: str = "change-me"
+    location_admin_secret: str = "change-me"
+
 
     model_config = ConfigDict(env_file=".env")
 

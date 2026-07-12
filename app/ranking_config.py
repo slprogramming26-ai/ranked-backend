@@ -22,3 +22,17 @@ SWIPE_POINTS = {
     "creativity":   {"right": 5, "left": 2},
     "productivity": {"right": 5, "left": 2},
 }
+
+
+# --- Feed-Ranking: Gewichte fuer die Score-Sortierung in get_posts ---
+# score = FEED_VOTE_WEIGHT * votes
+#       - FEED_AGE_PENALTY_PER_HOUR * alter_in_stunden
+#       + FEED_FOLLOW_BONUS  (wenn ich dem Autor folge)
+#       + FEED_VIBE_BONUS    (wenn Autor und ich einen Vibe-Faktor teilen)
+
+FEED_VOTE_WEIGHT = 1
+FEED_AGE_PENALTY_PER_HOUR = 1
+FEED_FOLLOW_BONUS = 50
+FEED_VIBE_BONUS = 20
+
+
