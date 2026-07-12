@@ -156,6 +156,7 @@ def get_current_user(current_user: int = Depends(oauth2.get_current_user),  db: 
             "vibe_factor_2": current_user.vibe_factor_2,
             "profile_picture_url": current_user.profile_picture_url,
             "biography": current_user.biography,
+            "location": current_user.location,
             "ranking_enabled": current_user.ranking_enabled,
             "follower_count": follower_count,
             "xp": current_user.xp,
@@ -244,6 +245,12 @@ def upgrade_user(user_details: schemas.UserDetails,current_user: int = Depends(o
     
 
     update_data = user_details.dict(exclude_unset=True)
+
+    if update_data.get("location_id") is not None:
+        location_exists = db.query(models.Location).filter(models.Location.id == update_data["location_id"]).first()
+        if not location_exists:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Location does not exist")
+
 
 
     # 3. Update ausführen

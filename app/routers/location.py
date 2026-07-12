@@ -11,11 +11,24 @@ router = APIRouter(
 
 
 @router.get("/", response_model=List[schemas.LocationOut])
-def get_locations(db: Session = Depends(database.get_dp), current_user: int = Depends(oauth2.get_current_user)):
+def get_locations(search: Optional[str] = "", db: Session = Depends(database.get_dp), current_user: int = Depends(oauth2.get_current_user)):
 
-    locations = db.query(models.Location).order_by(models.Location.name.asc()).all()
+    pattern = f"%{search}%"
+    prefix = f"{search}%"
+
+    locations = (
+        db.query(models.Location)
+        .filter(models.Location.name.ilike(pattern))
+        .order_by(
+            models.Location.name.ilike(prefix).desc(),
+            models.Location.name.asc(),
+        )
+        .limit(20)
+        .all()
+    )
 
     return locations
+
 
 
 @router.post("/", status_code=status.HTTP_201_CREATED)

@@ -125,9 +125,14 @@ async def upload_post_image(
 @router.get("/", response_model=List[schemas.PostOut])
 def get_posts(db: Session = Depends(get_dp), 
               current_user: int = Depends(oauth2.get_current_user), 
-              limit: int = 10, 
-              skip: int = 0, 
-              search: Optional[str] = ""):
+              limit: int = 10,
+              skip: int = 0,
+              search: Optional[str] = "",
+              local: bool = False):
+
+    # Lokal-Feed nur möglich, wenn der User selbst einen Ort gesetzt hat.
+    if local and current_user.location_id is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="user has no location set")
 
     # Stufe B vom Report-System: Posts, die ICH gemeldet habe, sehe ich nicht mehr.
     # post_id.isnot(None) schließt User-Reports aus (die haben post_id = NULL).
@@ -169,11 +174,16 @@ def get_posts(db: Session = Depends(get_dp),
 
 
 
-    posts = db.query(models.Post, vote_count.label("votes")) \
+    posts_query = db.query(models.Post, vote_count.label("votes")) \
     .join(models.Votes, models.Votes.post_id == models.Post.id, isouter=True) \
     .group_by(models.Post.id) \
     .filter(models.Post.title.contains(search)) \
-    .filter(models.Post.id.notin_(reported_post_ids)) \
+    .filter(models.Post.id.notin_(reported_post_ids))
+
+    if local:
+        posts_query = posts_query.filter(models.Post.location_id == current_user.location_id)
+
+    posts = posts_query \
     .order_by(score.desc(), models.Post.created_at.desc()) \
     .limit(limit) \
     .offset(skip) \
@@ -204,9 +214,20 @@ def get_posts(db: Session = Depends(get_dp),
 @router.post("/",status_code=status.HTTP_201_CREATED,response_model= schemas.Post)
 def create_posts(post: schemas.PostCreate, db: Session = Depends(get_dp), current_user: int = Depends(oauth2.get_current_user)):
     
-
     
-    new_post = models.Post(owner_id= current_user.id, **post.dict())
+    if post.location_id is not None:
+        location_exists = db.query(models.Location).filter(models.Location.id == post.location_id).first()
+        if not location_exists:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Location does not exist")
+
+    post_data = post.dict()
+
+    if post_data["location_id"] is None:
+        post_data["location_id"] = current_user.location_id
+
+    new_post = models.Post(owner_id= current_user.id, **post_data)
+
+
     db.add(new_post)
     db.commit()
     db.refresh(new_post)

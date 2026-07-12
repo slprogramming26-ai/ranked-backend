@@ -121,6 +121,7 @@ class PostBase(BaseModel):
 class PostCreate(PostBase):
     image_url: Optional[str] = None
     flag: Optional[Literal["engagement", "creativity", "productivity"]] = None
+    location_id: Optional[int] = None
 
 
 class Post(PostBase):
