@@ -165,6 +165,16 @@ class GroupChats(Base):
     # Schlüssel-Epoche, verteilt sie und setzt das Flag zurück auf False.
     needs_rekey = Column(Boolean, nullable=False, server_default='False')
 
+class GroupChatJoinCodes(Base):
+
+    __tablename__ = 'group_chats_join_codes'
+
+    id = Column(Integer, primary_key=True, nullable=False)
+    code = Column(Integer, nullable=False, unique=True)
+    group_chat_id = Column(Integer, ForeignKey("group_chats.group_chat_id", ondelete="CASCADE"), nullable=False)
+    created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text('now()'))
+
+
 
 class GroupChatMembership(Base):
 

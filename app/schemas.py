@@ -395,6 +395,12 @@ class GroupMemberOut(BaseModel):
     username: str
     profile_picture_url: Optional[str] = None
 
+class GroupChatJoinCodeOut(BaseModel):
+
+    code: int
+    created_at: datetime
+    group_chat_id: int
+
 
 # E2EE
 

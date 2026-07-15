@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     story_cleanup_secret: str = "change-me"
     ranking_job_secret: str = "change-me"
     location_admin_secret: str = "change-me"
+    group_join_code_cleanup_secret: str = "change-me"
 
 
     model_config = ConfigDict(env_file=".env")
