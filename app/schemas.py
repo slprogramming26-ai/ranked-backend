@@ -40,6 +40,7 @@ class UserCreate(BaseModel):
     email: EmailStr
     username: str
     passwort: str
+    age: int = Field(ge=0, le=120)
 
 
 class UserDetails(BaseModel):
@@ -400,6 +401,12 @@ class GroupChatJoinCodeOut(BaseModel):
     code: int
     created_at: datetime
     group_chat_id: int
+
+class GroupChatJoinOut(BaseModel):
+
+    message: str
+    group_chat_id: int
+
 
 
 # E2EE

@@ -33,7 +33,7 @@ s3_client = boto3.client(
 STORY_LIFETIME = timedelta(days=1)
 
 
-def delete_s3_object(image_url: str | None):
+def delete_s3_object(image_url: str | None, db: Session):
     """Löscht eine Datei aus dem Story-Bucket anhand ihrer öffentlichen URL.
     Schluckt Fehler bewusst (analog zu post.delete_s3_object)."""
     if not image_url:
@@ -46,6 +46,9 @@ def delete_s3_object(image_url: str | None):
     try:
         s3_client.delete_object(Bucket=BUCKET_NAME, Key=s3_key)
     except Exception as e:
+        failed_image_deletion = models.FailedImageDeletions(bucket = BUCKET_NAME, s3_key = s3_key)
+        db.add(failed_image_deletion)
+        db.commit()
         print(f"Warnung: Story-Bild konnte nicht gelöscht werden: {e}")
 
 
@@ -211,7 +214,7 @@ def cleanup_expired_stories(
 
     # Erst die Bilder aus dem Bucket löschen (DSGVO: Daten müssen wirklich weg).
     for story in expired:
-        delete_s3_object(story.image_url)
+        delete_s3_object(story.image_url, db)
 
     # Dann die DB-Zeilen.
     deleted_count = db.query(models.Story).filter(

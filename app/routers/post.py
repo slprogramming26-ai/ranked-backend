@@ -32,7 +32,7 @@ s3_client = boto3.client(
     aws_secret_access_key=S3_SECRET_KEY
 )
 
-def delete_s3_object(image_url: str | None):
+def delete_s3_object(image_url: str | None, db: Session):
     """Löscht eine Datei aus S3 anhand ihrer öffentlichen URL. Schluckt Fehler bewusst."""
     if not image_url:
         return
@@ -44,6 +44,9 @@ def delete_s3_object(image_url: str | None):
     try:
         s3_client.delete_object(Bucket=BUCKET_NAME, Key=s3_key)
     except Exception as e:
+        failed_image_deletion = models.FailedImageDeletions(bucket = BUCKET_NAME, s3_key = s3_key)
+        db.add(failed_image_deletion)
+        db.commit()
         print(f"Warnung: S3-Bild konnte nicht gelöscht werden: {e}")
 
 
@@ -269,7 +272,7 @@ def delete_post(id: int, db: Session = Depends(get_dp), current_user: int = Depe
     if post.owner_id != current_user.id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorize to perform requested action")
 
-    delete_s3_object(post.image_url)
+    delete_s3_object(post.image_url, db)
     post_query.delete(synchronize_session=False)
     db.commit()
 

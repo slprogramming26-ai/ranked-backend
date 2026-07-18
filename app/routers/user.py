@@ -33,7 +33,7 @@ s3_client = boto3.client(
     aws_secret_access_key=S3_SECRET_KEY
 )
 
-def delete_s3_object(image_url: str | None):
+def delete_s3_object(image_url: str | None, db: Session):
     """Löscht eine Datei aus S3 anhand ihrer öffentlichen URL. Schluckt Fehler bewusst."""
     if not image_url:
         return
@@ -45,6 +45,9 @@ def delete_s3_object(image_url: str | None):
     try:
         s3_client.delete_object(Bucket=BUCKET_NAME, Key=s3_key)
     except Exception as e:
+        failed_image_deletion = models.FailedImageDeletions(bucket = BUCKET_NAME, s3_key = s3_key)
+        db.add(failed_image_deletion)
+        db.commit()
         print(f"Warnung: S3-Bild konnte nicht gelöscht werden: {e}")
 
 
@@ -120,6 +123,8 @@ async def upload_user_image(
 @router.post("/", status_code=status.HTTP_201_CREATED, response_model=schemas.UserOut)
 def create_user(user: schemas.UserCreate, db: Session = Depends(get_dp)):
 
+    if user.age < 16:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You have to be at least 16 to use Ranked")
 
     existing_email = db.query(models.User).filter(models.User.email == user.email).first()
     if existing_email:
@@ -137,7 +142,7 @@ def create_user(user: schemas.UserCreate, db: Session = Depends(get_dp)):
 
     hashed_passwort = utils.hash_password(user.passwort)
     user.passwort = hashed_passwort
-    new_user = models.User(**user.dict())
+    new_user = models.User(**user.model_dump(exclude={"age"}))
     db.add(new_user)
     db.commit()
     db.refresh(new_user)
@@ -267,10 +272,10 @@ def delete_account(current_user = Depends(oauth2.get_current_user),
     # 1. Bilder ALLER Posts des Users einsammeln und aus S3 löschen
     posts = db.query(models.Post).filter(models.Post.owner_id == current_user.id).all()
     for post in posts:
-        delete_s3_object(post.image_url)
+        delete_post_image(post.image_url, db)
 
     # 2. Profilbild löschen
-    delete_s3_object(current_user.profile_picture_url)
+    delete_s3_object(current_user.profile_picture_url, db)
 
     # 3. User aus DB löschen -> CASCADE räumt posts/votes/comments automatisch auf
     db.query(models.User).filter(models.User.id == current_user.id) \

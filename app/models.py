@@ -51,6 +51,17 @@ class User(Base):
     last_swipe_date = Column(DATE, nullable=True)
     location_id = Column(Integer, ForeignKey("locations.id", ondelete="SET NULL"), nullable=True)
     location = relationship("Location")
+    
+
+class FailedImageDeletions(Base):
+
+    __tablename__ = 'failed_image_deletions'
+
+    id = Column(Integer, primary_key= True, nullable= False)
+    bucket = Column(String, nullable=False)
+    s3_key = Column(String, nullable=False)
+    created_at = Column(TIMESTAMP(timezone=True), nullable= False, server_default= text('now()'))
+
 
 
 

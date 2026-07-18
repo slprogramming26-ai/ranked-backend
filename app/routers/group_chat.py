@@ -40,6 +40,7 @@ def create_group_chat(
     db.refresh(group)
 
 
+
     db.add(models.GroupChatMembership(
         group_chat_id=group.group_chat_id,
         participant_id=current_user.id,
@@ -84,7 +85,7 @@ def create_group_chat_join_code(
 
 
 
-@router.post("/group_chat/join/{group_chat_join_code}", status_code=status.HTTP_201_CREATED)
+@router.post("/group_chat/join/{group_chat_join_code}", status_code=status.HTTP_201_CREATED, response_model=schemas.GroupChatJoinOut)
 def join_group_chat(
     group_chat_join_code: int,
     db: Session = Depends(get_dp),
@@ -121,7 +122,7 @@ def join_group_chat(
         participant_id=current_user.id,
     ))
     db.commit()
-    return {"message": "joined"}
+    return {"message": "joined", "group_chat_id": code.group_chat_id} 
 
 
 
