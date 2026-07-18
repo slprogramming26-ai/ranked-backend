@@ -3,20 +3,23 @@ from . import models
 from .database import engine
 from .routers import group_chat, post, user, auth, vote, comment,location, cleanup, ranking, follow, message, key, story, report
 from .ws import routes as ws_routes
-from fastapi.middleware.cors import CORSMiddleware
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from .limiter import limiter          # <- der EINE Limiter aus limiter.py
+
+
+
+
 
 
 
 app = FastAPI()
 
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # Für Entwicklung okay, später einschränken
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+
+
 
 app.include_router(post.router)
 app.include_router(user.router)

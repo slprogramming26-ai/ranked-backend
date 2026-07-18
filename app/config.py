@@ -18,10 +18,10 @@ class Settings(BaseSettings):
     supabase_url: str
     # Secret, mit dem der externe Scheduler den Story-Cleanup-Endpoint aufruft.
     # Muss als Header "X-Cleanup-Secret" mitgeschickt werden.
-    story_cleanup_secret: str = "change-me"
-    ranking_job_secret: str = "change-me"
-    location_admin_secret: str = "change-me"
-    group_join_code_cleanup_secret: str = "change-me"
+    story_cleanup_secret: str
+    ranking_job_secret: str
+    location_admin_secret: str
+    group_join_code_cleanup_secret: str
 
 
     model_config = ConfigDict(env_file=".env")
