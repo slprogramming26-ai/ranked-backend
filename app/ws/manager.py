@@ -1,6 +1,7 @@
 from fastapi import WebSocket
 from typing import Dict
 from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from .. import models, schemas
 from fastapi.concurrency import run_in_threadpool
@@ -108,11 +109,32 @@ class ConnectionManager:
             client_msg_id=client_msg_id,
         )
         db.add(message)
-        db.commit()
+        try:
+            db.commit()
+        except IntegrityError:
+            # Unique-Index (sender_id, client_msg_id) hat zugeschlagen: dieselbe
+            # Nachricht wurde schon gespeichert (Reconnect-Race). Idempotent
+            # behandeln — vorhandene Zeile nehmen statt Fehler werfen, damit der
+            # Client sein Ack bekommt.
+            db.rollback()
+            # Nur MIT client_msg_id kann es ein echtes Duplikat sein. Ohne waere
+            # die Suche nach "IS NULL" gefaehrlich: sie faende irgendeine alte
+            # Nachricht ohne ID und gaebe die faelschlich als Duplikat zurueck.
+            existing = None
+            if client_msg_id is not None:
+                existing = db.query(models.Message).filter(
+                    models.Message.sender_id == sender_id,
+                    models.Message.client_msg_id == client_msg_id,
+                ).first()
+            if existing is None:
+                # IntegrityError hatte einen anderen Grund (z.B. Empfaenger geloescht).
+                raise ChatError("Nachricht konnte nicht gespeichert werden.")
+            # False = Duplikat -> kein zweiter Live-Push an den Empfaenger.
+            return existing.created_at, False
         db.refresh(message)
 
         # Nur einfache Daten zurückgeben (kein ORM-Objekt) -> keine Lazy-Load-Falle.
-        return message.created_at
+        return message.created_at, True
 
 
     async def send_to_user(
@@ -124,8 +146,8 @@ class ConnectionManager:
         client_msg_id: str | None = None,
     ) -> int:
 
-        # Phase 1: DB-Arbeit im Threadpool (ein Hop), gibt nur created_at zurück.
-        created_at = await run_in_threadpool(
+        # Phase 1: DB-Arbeit im Threadpool (ein Hop), gibt nur einfache Daten zurück.
+        created_at, is_new = await run_in_threadpool(
             self._prepare_dm_send,
             sender_id,
             recipient_id,
@@ -133,6 +155,11 @@ class ConnectionManager:
             db,
             client_msg_id,
         )
+
+        # Duplikat (Reconnect-Race): schon gespeichert und ggf. schon gepusht.
+        # Verpasstes holt der Empfaenger per REST — kein zweiter Push, nur Ack.
+        if not is_new:
+            return 0
 
         # Phase 2: der Live-Send MUSS auf dem Event-Loop bleiben (echtes async).
         socket = self.active_connections.get(recipient_id)
@@ -199,7 +226,22 @@ class ConnectionManager:
             client_msg_id=client_msg_id,
         )
         db.add(message)
-        db.commit()
+        try:
+            db.commit()
+        except IntegrityError:
+            # Duplikat (Reconnect-Race): schon gespeichert -> idempotent behandeln.
+            # Leere Empfaengerliste = der Fanout unten macht schlicht nichts mehr.
+            db.rollback()
+            # Gleiche Absicherung wie bei DMs: ohne client_msg_id kein Duplikat-Lookup.
+            existing = None
+            if client_msg_id is not None:
+                existing = db.query(models.GroupMessage).filter(
+                    models.GroupMessage.sender_id == sender_id,
+                    models.GroupMessage.client_msg_id == client_msg_id,
+                ).first()
+            if existing is None:
+                raise ChatError("Nachricht konnte nicht gespeichert werden.")
+            return existing.created_at, []
         db.refresh(message)
 
         # 2) Live an alle ONLINE-Mitglieder (außer Sender, außer geblockte) pushen.

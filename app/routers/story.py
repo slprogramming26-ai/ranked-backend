@@ -189,7 +189,7 @@ def delete_story(
     if story.owner_id != current_user.id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorize to perform requested action")
 
-    delete_s3_object(story.image_url)
+    delete_s3_object(story.image_url, db)
     story_query.delete(synchronize_session=False)
     db.commit()
 

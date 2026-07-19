@@ -10,14 +10,25 @@ from .. import models, schemas, oauth2
 from ..database import get_dp
 from ..ranking_config import SWIPE_POINTS
 from ..xp_config import XP_PER_SESSION, XP_PER_POINT_RECEIVED, STREAK_MILESTONE_BONUS, placement_bonus_for_rank
-from datetime import datetime, timedelta, timezone, date
+from datetime import datetime, timedelta, timezone, date, time
 from typing import Optional
+import random
 
 
 router = APIRouter(
     prefix="/ranking",
     tags=['Ranking']
 )
+
+
+def _day_bounds(day: date) -> tuple[datetime, datetime]:
+    """Ein Kalendertag als [start, ende)-Zeitfenster in UTC.
+
+    Ersetzt func.date(created_at) == day: gleiche Zeilen, aber die Spalte bleibt
+    "nackt" im Vergleich -> Postgres kann den Index auf created_at nutzen.
+    ende ist EXKLUSIV (< statt <=), damit Mitternacht nicht doppelt zaehlt."""
+    start = datetime.combine(day, time.min, tzinfo=timezone.utc)
+    return start, start + timedelta(days=1)
 
 @router.get("/my_target", response_model=schemas.MyTargetOut)
 def get_personal_target(db: Session = Depends(get_dp), current_user: models.User = Depends(oauth2.get_current_user)):
@@ -45,16 +56,33 @@ def get_personal_target(db: Session = Depends(get_dp), current_user: models.User
         # - Nicht der User selbst ist
         # - Das Ranking-Feature aktiviert hat (Opt-In)
         # - Posts in den letzten 7 Tagen hat
-        target = db.query(models.User).filter(
+        #
+        # Nur die IDs der Teilnahmeberechtigten (leichtgewichtig, laeuft ueber Indexe):
+        eligible = db.query(models.User.id).filter(
             models.User.id != current_user.id,
             models.User.ranking_enabled == True
         ).join(models.Post, models.Post.owner_id == models.User.id) \
          .filter(models.Post.created_at >= one_week_ago) \
-         .group_by(models.User.id) \
-         .order_by(func.random()) \
-         .first()
+         .group_by(models.User.id)
 
+        eligible_count = eligible.count()
+        if eligible_count == 0:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Aktuell sind keine anderen Teilnehmer für das Ranking verfügbar."
+            )
+
+        # Zufall OHNE order_by(random()): wir wuerfeln eine POSITION (0..count-1)
+        # und springen per offset direkt dorthin. order_by(User.id) macht die
+        # Reihenfolge deterministisch, sonst waere "Position 17" nicht wohldefiniert.
+        target_id = eligible.order_by(models.User.id) \
+            .offset(random.randrange(eligible_count)) \
+            .limit(1).scalar()
+
+        target = db.query(models.User).filter(models.User.id == target_id).first()
         if not target:
+            # Race-Absicherung: User koennte zwischen count() und Auswahl geloescht
+            # worden sein — dann wie "keine Teilnehmer" behandeln.
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Aktuell sind keine anderen Teilnehmer für das Ranking verfügbar."
@@ -90,9 +118,11 @@ def swipe_session(
     if not daily_target:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No target found. get yourself a target first")
     
+    day_start, day_end = _day_bounds(today)
     already_swiped = db.query(models.RankingScores).filter(
         models.RankingScores.voter_id == current_user.id,
-        func.date(models.RankingScores.created_at) == today
+        models.RankingScores.created_at >= day_start,
+        models.RankingScores.created_at < day_end,
     ).first()
 
     if already_swiped:
@@ -186,6 +216,7 @@ def swipe_session(
 @router.get("/leaderboard", response_model=schemas.LeaderboardOut)
 def get_leaderboard(db: Session = Depends(get_dp), current_user: models.User = Depends(oauth2.get_current_user)):
     today = datetime.now(timezone.utc).date()
+    day_start, day_end = _day_bounds(today)
 
     # Bewerteter User = Besitzer des geswipten Posts.
     # Weg: RankingScores --post_id--> Post --owner_id--> User
@@ -197,7 +228,8 @@ def get_leaderboard(db: Session = Depends(get_dp), current_user: models.User = D
         func.count(models.RankingScores.id).label("total_ratings")
     ).join(models.Post, models.Post.id == models.RankingScores.post_id) \
      .join(models.User, models.User.id == models.Post.owner_id) \
-     .filter(func.date(models.RankingScores.created_at) == today) \
+     .filter(models.RankingScores.created_at >= day_start,
+             models.RankingScores.created_at < day_end) \
      .group_by(models.Post.owner_id, models.User.username, models.User.profile_picture_url) \
      .order_by(func.sum(models.RankingScores.points).desc()) \
      .limit(7) \
@@ -221,7 +253,8 @@ def get_leaderboard(db: Session = Depends(get_dp), current_user: models.User = D
         models.Post.owner_id.label("uid"),
         func.sum(models.RankingScores.points).label("pts"),
     ).join(models.Post, models.Post.id == models.RankingScores.post_id) \
-     .filter(func.date(models.RankingScores.created_at) == today) \
+     .filter(models.RankingScores.created_at >= day_start,
+             models.RankingScores.created_at < day_end) \
      .group_by(models.Post.owner_id).subquery()
 
     # Meine heute erhaltenen Punkte (0, wenn mich heute niemand bewertet hat ->
@@ -266,6 +299,7 @@ def end_of_day_bonus(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid ranking job secret")
 
     target_day = day or (datetime.now(timezone.utc).date() - timedelta(days=1))
+    day_start, day_end = _day_bounds(target_day)
 
     already_done = db.query(models.DailyBonusLog).filter(
         models.DailyBonusLog.date == target_day
@@ -277,7 +311,8 @@ def end_of_day_bonus(
         models.Post.owner_id.label("uid"),
         func.sum(models.RankingScores.points).label("pts"),
     ).join(models.Post, models.Post.id == models.RankingScores.post_id) \
-     .filter(func.date(models.RankingScores.created_at) == target_day) \
+     .filter(models.RankingScores.created_at >= day_start,
+             models.RankingScores.created_at < day_end) \
      .group_by(models.Post.owner_id) \
      .order_by(func.sum(models.RankingScores.points).desc()) \
      .all()

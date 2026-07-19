@@ -22,28 +22,39 @@ router = APIRouter(
 @router.get("/", response_model=List[schemas.MessageOut])
 def get_messages(
     since: Optional[datetime] = None,
+    limit: int = Query(default=200, ge=1, le=500),
+    skip: int = Query(default=0, ge=0),
     db: Session = Depends(get_dp),
     current_user: int = Depends(oauth2.get_current_user),
 ):
-    query = db.query(models.Message).filter(                                                                                                                                                                                         
-        or_(                                                                                                                                                                                                                         
-            models.Message.recipient_id == current_user.id,                                                                                                                                                                          
-            models.Message.sender_id == current_user.id,                                                                                                                                                                             
-        )                                                                                                                                                                                                                            
-    )      
+    query = db.query(models.Message).filter(
+        or_(
+            models.Message.recipient_id == current_user.id,
+            models.Message.sender_id == current_user.id,
+        )
+    )
 
     if since is not None:
         query = query.filter(models.Message.created_at > since)
 
-    # Immer sortiert ausliefern, damit der Client die Reihenfolge nicht selbst herstellen muss.
-    return query.order_by(models.Message.created_at).all()
+    # Paginierung vom NEUEN Ende her: absteigend sortieren, dann skip/limit.
+    # skip=0 -> die neuesten `limit` Nachrichten; beim Hochscrollen laedt der
+    # Client mit skip=200, 400, ... die jeweils aelteren Seiten nach.
+    messages = query.order_by(models.Message.created_at.desc()) \
+        .offset(skip).limit(limit).all()
+
+    # Fuer den Client wieder aufsteigend (aelteste zuerst) — wie bisher,
+    # damit er die Reihenfolge nicht selbst herstellen muss.
+    return list(reversed(messages))
 
 
 @router.get("/group/{id}", response_model=List[schemas.GroupMessageOut])
 def get_group_messages(
     id: int,
     since: Optional[datetime] = None,
-    db: Session = Depends(get_dp), 
+    limit: int = Query(default=200, ge=1, le=500),
+    skip: int = Query(default=0, ge=0),
+    db: Session = Depends(get_dp),
     current_user: int = Depends(oauth2.get_current_user),
               ):
     
@@ -64,4 +75,10 @@ def get_group_messages(
     if since is not None:
         query = query.filter(models.GroupMessage.created_at > since)
 
-    return query.order_by(models.GroupMessage.created_at).all()
+    # Paginierung vom NEUEN Ende her (wie bei den DMs): skip=0 -> neueste Seite,
+    # beim Hochscrollen laedt der Client aeltere Seiten nach.
+    messages = query.order_by(models.GroupMessage.created_at.desc()) \
+        .offset(skip).limit(limit).all()
+
+    # Fuer den Client wieder aufsteigend (aelteste zuerst) — wie bisher.
+    return list(reversed(messages))

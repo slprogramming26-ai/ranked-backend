@@ -9,6 +9,11 @@ engine = create_engine(
     SQLALCHEMY_DATABASE_URL,
     connect_args={"sslmode": "require"},
     pool_pre_ping=True,
+    # FastAPI bedient sync-Endpoints mit bis zu 40 Threads parallel — die
+    # Default-Poolgroesse (5 + 10 Overflow) wird da unter Last zum Engpass.
+    pool_size=10,        # dauerhaft offen gehaltene Verbindungen
+    max_overflow=20,     # zusaetzliche Verbindungen bei Lastspitzen (werden danach geschlossen)
+    pool_recycle=1800,   # Verbindungen nach 30 min erneuern, bevor Supabase sie serverseitig kappt
 )
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()

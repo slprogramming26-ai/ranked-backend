@@ -306,7 +306,6 @@ def block_user(id: int, current_user: int = Depends(oauth2.get_current_user), db
     if blocked_user:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="You already blocked that user")
     
-
     new_blocked_user = models.Block(blocker_id=current_user.id, blocked_id=id)
 
     db.add(new_blocked_user)

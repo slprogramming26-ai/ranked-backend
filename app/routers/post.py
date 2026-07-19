@@ -10,7 +10,8 @@ import uuid
 from sqlalchemy import func, case, or_
 from .. import models, schemas, oauth2
 from ..database import get_dp
-from ..ranking_config import FEED_VOTE_WEIGHT, FEED_AGE_PENALTY_PER_HOUR, FEED_FOLLOW_BONUS, FEED_VIBE_BONUS
+from ..ranking_config import FEED_VOTE_WEIGHT, FEED_AGE_PENALTY_PER_HOUR, FEED_FOLLOW_BONUS, FEED_VIBE_BONUS, FEED_MAX_AGE_DAYS
+from datetime import datetime, timedelta, timezone
 
 
 router = APIRouter(
@@ -185,6 +186,12 @@ def get_posts(db: Session = Depends(get_dp),
 
     if local:
         posts_query = posts_query.filter(models.Post.location_id == current_user.location_id)
+
+    # Kandidatenmenge begrenzen: nur beim normalen Feed (ohne Suche).
+    # Wer aktiv nach einem Titel SUCHT, soll auch alte Posts finden koennen.
+    if not search:
+        feed_cutoff = datetime.now(timezone.utc) - timedelta(days=FEED_MAX_AGE_DAYS)
+        posts_query = posts_query.filter(models.Post.created_at >= feed_cutoff)
 
     posts = posts_query \
     .order_by(score.desc(), models.Post.created_at.desc()) \

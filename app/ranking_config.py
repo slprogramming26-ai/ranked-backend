@@ -35,4 +35,11 @@ FEED_AGE_PENALTY_PER_HOUR = 1
 FEED_FOLLOW_BONUS = 50
 FEED_VIBE_BONUS = 20
 
+# Nur Posts der letzten X Tage nehmen ueberhaupt am Feed-Ranking teil.
+# Rechtfertigung: bei 1 Punkt Age-Penalty pro Stunde hat ein 30 Tage alter
+# Post schon -720 Punkte — der taucht sowieso nie oben auf. Der Filter
+# aendert das Ergebnis also praktisch nicht, aber die DB muss den Score
+# nur noch fuer junge Posts berechnen statt fuer die ganze Tabelle.
+FEED_MAX_AGE_DAYS = 30
+
 
