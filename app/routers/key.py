@@ -55,6 +55,7 @@ def get_public_key(
 
     return key
 
+
 @router.post("/group/{group_chat_id}/rekey",
               response_model=schemas.GroupRekeyOut,
                 status_code=status.HTTP_201_CREATED)

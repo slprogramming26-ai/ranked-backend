@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Response, status, HTTPException, Depends, APIRouter, Query, UploadFile, File
+from fastapi import FastAPI, Response, status, HTTPException, Depends, APIRouter, Query, UploadFile, File, Request
 from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session
 from typing import List, Optional
@@ -12,6 +12,7 @@ from .. import models, schemas, oauth2,utils
 from ..database import get_dp
 from ..xp_config import get_league, get_effective_streak
 from .post import delete_s3_object as delete_post_image
+from ..limiter import limiter        # oben dazu
 
 
 
@@ -120,8 +121,10 @@ async def upload_user_image(
 
 
 
+
 @router.post("/", status_code=status.HTTP_201_CREATED, response_model=schemas.UserOut)
-def create_user(user: schemas.UserCreate, db: Session = Depends(get_dp)):
+@limiter.limit("5/minute")
+def create_user(request: Request, user: schemas.UserCreate, db: Session = Depends(get_dp)):
 
     if user.age < 16:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You have to be at least 16 to use Ranked")
@@ -130,7 +133,7 @@ def create_user(user: schemas.UserCreate, db: Session = Depends(get_dp)):
     if existing_email:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=f"User mit der E-Mail {user.email} existiert bereits."
+            detail=f"Diese E-Mail existiert bereits."
         )
 
     existing_username = db.query(models.User).filter(models.User.username == user.username).first()
