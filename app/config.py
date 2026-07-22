@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     ranking_job_secret: str
     location_admin_secret: str
     group_join_code_cleanup_secret: str
+    redis_url: str
 
 
     model_config = ConfigDict(env_file=".env")

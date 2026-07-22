@@ -4,7 +4,7 @@ from PIL import Image
 import io
 import boto3
 from ..config import settings
-
+from ..redis_client import redis_client
 from sqlalchemy import func
 from .. import models, schemas, oauth2
 from ..database import get_dp
@@ -19,6 +19,138 @@ router = APIRouter(
     prefix="/ranking",
     tags=['Ranking']
 )
+
+def _get_leaderboard_from_sql(db, current_user):
+
+    today = datetime.now(timezone.utc).date()
+    day_start, day_end = _day_bounds(today)
+
+     # Bewerteter User = Besitzer des geswipten Posts.
+    # Weg: RankingScores --post_id--> Post --owner_id--> User
+    scores = db.query(
+        models.Post.owner_id.label("target_user_id"),
+        models.User.username,
+        models.User.profile_picture_url,
+        func.sum(models.RankingScores.points).label("total_points"),
+        func.count(models.RankingScores.id).label("total_ratings")
+    ).join(models.Post, models.Post.id == models.RankingScores.post_id) \
+     .join(models.User, models.User.id == models.Post.owner_id) \
+     .filter(models.RankingScores.created_at >= day_start,
+             models.RankingScores.created_at < day_end) \
+     .group_by(models.Post.owner_id, models.User.username, models.User.profile_picture_url) \
+     .order_by(func.sum(models.RankingScores.points).desc()) \
+     .limit(7) \
+     .all()
+
+    entries = [
+        {
+            "target_user_id": row.target_user_id,
+            "username": row.username,
+            "profile_picture_url": row.profile_picture_url,
+            "total_points": row.total_points,
+            "total_ratings": row.total_ratings,
+        }
+        for row in scores
+    ]
+
+    # --- "Du"-Zeile (Phase 2) ---
+    # Punkte pro User HEUTE als wiederverwendbare Subquery: eine Zeile je bewertetem
+    # User mit seiner Punktsumme. Basis fuer Rang UND Abstand nach oben.
+    per_user = db.query(
+        models.Post.owner_id.label("uid"),
+        func.sum(models.RankingScores.points).label("pts"),
+    ).join(models.Post, models.Post.id == models.RankingScores.post_id) \
+     .filter(models.RankingScores.created_at >= day_start,
+             models.RankingScores.created_at < day_end) \
+     .group_by(models.Post.owner_id).subquery()
+
+    # Meine heute erhaltenen Punkte (0, wenn mich heute niemand bewertet hat ->
+    # dann fehlt meine Zeile in per_user und scalar() liefert None).
+    my_points = db.query(per_user.c.pts) \
+        .filter(per_user.c.uid == current_user.id).scalar()
+    my_points = int(my_points or 0)
+
+
+    # Rang = Anzahl User mit MEHR Punkten als ich, + 1. (Bei Gleichstand teilt man
+    # sich denselben Rang; wer 0 hat, landet hinter allen, die heute Punkte haben.)
+    higher_count = db.query(func.count()).select_from(per_user) \
+        .filter(per_user.c.pts > my_points).scalar()
+    my_rank = int(higher_count) + 1
+
+    # Abstand zum naechsthoeheren: die kleinste Punktzahl, die groesser ist als meine,
+    # minus meine. None -> es gibt niemanden ueber mir -> ich bin #1 -> 0.
+    next_up = db.query(func.min(per_user.c.pts)) \
+        .filter(per_user.c.pts > my_points).scalar()
+    points_to_next = int(next_up - my_points) if next_up is not None else 0
+
+    return {
+        "entries": entries,
+        "me": {
+            "my_rank": my_rank,
+            "my_points": my_points,
+            "points_to_next": points_to_next,
+        },
+    }
+    
+def _get_leaderboard_from_redis(db, current_user):
+    today = date.today()
+    leaderboard_key = f"leaderboard:{today.isoformat()}"
+    day_start, day_end = _day_bounds(today)
+
+    top = redis_client.zrevrange(leaderboard_key, 0, 6, withscores=True)
+    top_ids = [int(uid) for uid, _ in top]
+
+    ratings = db.query(
+        models.Post.owner_id.label("uid"),
+        models.User.username,
+        models.User.profile_picture_url,
+        func.count(models.RankingScores.id).label("total_ratings"),
+    ).join(models.Post, models.Post.id == models.RankingScores.post_id) \
+     .join(models.User, models.User.id == models.Post.owner_id) \
+     .filter(models.Post.owner_id.in_(top_ids),
+             models.RankingScores.created_at >= day_start,
+             models.RankingScores.created_at < day_end) \
+     .group_by(models.Post.owner_id, models.User.username, models.User.profile_picture_url) \
+     .all()
+    info_by_id = {row.uid: row for row in ratings}
+
+    entries = [
+        {
+            "target_user_id": int(uid),
+            "username": info_by_id[int(uid)].username,
+            "profile_picture_url": info_by_id[int(uid)].profile_picture_url,
+            "total_points": int(points),
+            "total_ratings": info_by_id[int(uid)].total_ratings,
+        }
+        for uid, points in top
+    ]
+
+    my_points_raw = redis_client.zscore(leaderboard_key, str(current_user.id))
+    my_points = int(my_points_raw) if my_points_raw is not None else 0
+
+    my_rank_raw = redis_client.zrevrank(leaderboard_key, str(current_user.id))
+    if my_rank_raw is not None:
+        my_rank = my_rank_raw + 1
+    else:
+        my_rank = redis_client.zcard(leaderboard_key) + 1
+
+    if my_rank > 1:
+        next_up = redis_client.zrevrange(leaderboard_key, my_rank - 2, my_rank - 2, withscores=True)
+        points_to_next = int(next_up[0][1]) - my_points
+    else:
+        points_to_next = 0
+
+    return {
+        "entries": entries,
+        "me": {
+            "my_rank": my_rank,
+            "my_points": my_points,
+            "points_to_next": points_to_next,
+        },
+    }
+
+
+
 
 
 def _day_bounds(day: date) -> tuple[datetime, datetime]:
@@ -201,6 +333,11 @@ def swipe_session(
     except Exception:
         db.rollback()
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not save swipes")
+    
+    leaderboard_key = f"leaderboard:{today.isoformat()}"
+    redis_client.zincrby(leaderboard_key, total_points, str(session.target_user_id))
+    redis_client.expire(leaderboard_key, 172800)
+
 
 
     return {
@@ -215,75 +352,12 @@ def swipe_session(
 
 @router.get("/leaderboard", response_model=schemas.LeaderboardOut)
 def get_leaderboard(db: Session = Depends(get_dp), current_user: models.User = Depends(oauth2.get_current_user)):
-    today = datetime.now(timezone.utc).date()
-    day_start, day_end = _day_bounds(today)
+    try:
+        return _get_leaderboard_from_redis(db, current_user)
+    except Exception:
+        print(f"[leaderboard] Redis-Pfad fehlgeschlagen, Fallback auf SQL für User {current_user.id}")
+        return _get_leaderboard_from_sql(db, current_user)
 
-    # Bewerteter User = Besitzer des geswipten Posts.
-    # Weg: RankingScores --post_id--> Post --owner_id--> User
-    scores = db.query(
-        models.Post.owner_id.label("target_user_id"),
-        models.User.username,
-        models.User.profile_picture_url,
-        func.sum(models.RankingScores.points).label("total_points"),
-        func.count(models.RankingScores.id).label("total_ratings")
-    ).join(models.Post, models.Post.id == models.RankingScores.post_id) \
-     .join(models.User, models.User.id == models.Post.owner_id) \
-     .filter(models.RankingScores.created_at >= day_start,
-             models.RankingScores.created_at < day_end) \
-     .group_by(models.Post.owner_id, models.User.username, models.User.profile_picture_url) \
-     .order_by(func.sum(models.RankingScores.points).desc()) \
-     .limit(7) \
-     .all()
-
-    entries = [
-        {
-            "target_user_id": row.target_user_id,
-            "username": row.username,
-            "profile_picture_url": row.profile_picture_url,
-            "total_points": row.total_points,
-            "total_ratings": row.total_ratings,
-        }
-        for row in scores
-    ]
-
-    # --- "Du"-Zeile (Phase 2) ---
-    # Punkte pro User HEUTE als wiederverwendbare Subquery: eine Zeile je bewertetem
-    # User mit seiner Punktsumme. Basis fuer Rang UND Abstand nach oben.
-    per_user = db.query(
-        models.Post.owner_id.label("uid"),
-        func.sum(models.RankingScores.points).label("pts"),
-    ).join(models.Post, models.Post.id == models.RankingScores.post_id) \
-     .filter(models.RankingScores.created_at >= day_start,
-             models.RankingScores.created_at < day_end) \
-     .group_by(models.Post.owner_id).subquery()
-
-    # Meine heute erhaltenen Punkte (0, wenn mich heute niemand bewertet hat ->
-    # dann fehlt meine Zeile in per_user und scalar() liefert None).
-    my_points = db.query(per_user.c.pts) \
-        .filter(per_user.c.uid == current_user.id).scalar()
-    my_points = int(my_points or 0)
-
-
-    # Rang = Anzahl User mit MEHR Punkten als ich, + 1. (Bei Gleichstand teilt man
-    # sich denselben Rang; wer 0 hat, landet hinter allen, die heute Punkte haben.)
-    higher_count = db.query(func.count()).select_from(per_user) \
-        .filter(per_user.c.pts > my_points).scalar()
-    my_rank = int(higher_count) + 1
-
-    # Abstand zum naechsthoeheren: die kleinste Punktzahl, die groesser ist als meine,
-    # minus meine. None -> es gibt niemanden ueber mir -> ich bin #1 -> 0.
-    next_up = db.query(func.min(per_user.c.pts)) \
-        .filter(per_user.c.pts > my_points).scalar()
-    points_to_next = int(next_up - my_points) if next_up is not None else 0
-
-    return {
-        "entries": entries,
-        "me": {
-            "my_rank": my_rank,
-            "my_points": my_points,
-            "points_to_next": points_to_next,
-        },
-    }
 
 
 @router.post("/end_of_day")
