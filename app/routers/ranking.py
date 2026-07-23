@@ -13,7 +13,6 @@ from ..xp_config import XP_PER_SESSION, XP_PER_POINT_RECEIVED, STREAK_MILESTONE_
 from datetime import datetime, timedelta, timezone, date, time
 from typing import Optional
 import random
-import time as time_module
 
 
 router = APIRouter(
@@ -94,14 +93,12 @@ def _get_leaderboard_from_sql(db, current_user):
     }
     
 def _get_leaderboard_from_redis(db, current_user):
-    t0 = time_module.perf_counter()
     today = date.today()
     leaderboard_key = f"leaderboard:{today.isoformat()}"
     day_start, day_end = _day_bounds(today)
 
     top = redis_client.zrevrange(leaderboard_key, 0, 6, withscores=True)
     top_ids = [int(uid) for uid, _ in top]
-    t1 = time_module.perf_counter()
 
     ratings = db.query(
         models.Post.owner_id.label("uid"),
@@ -115,7 +112,6 @@ def _get_leaderboard_from_redis(db, current_user):
              models.RankingScores.created_at < day_end) \
      .group_by(models.Post.owner_id, models.User.username, models.User.profile_picture_url) \
      .all()
-    t2 = time_module.perf_counter()
     info_by_id = {row.uid: row for row in ratings}
 
     entries = [
@@ -143,9 +139,6 @@ def _get_leaderboard_from_redis(db, current_user):
         points_to_next = int(next_up[0][1]) - my_points
     else:
         points_to_next = 0
-
-    t3 = time_module.perf_counter()
-    print(f"[timing] redis_top7={t1-t0:.3f}s  sql_enrich={t2-t1:.3f}s  redis_me={t3-t2:.3f}s  total={t3-t0:.3f}s")
 
     return {
         "entries": entries,
