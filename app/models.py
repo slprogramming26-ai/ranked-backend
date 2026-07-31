@@ -25,7 +25,10 @@ class Post(Base):
     image_url = Column(String, nullable=True)
     flag = Column(String, nullable= True)  # "engagement" | "creativity" | "productivity" | None — Punkte-Multiplikator
     location_id = Column(Integer, ForeignKey("locations.id", ondelete="SET NULL"), nullable=True, index=True)
-
+    # Denormalisierter Vote-Zaehler: wird beim Voten fortgeschrieben (siehe vote.py),
+    # damit der Feed nicht mehr per GROUP BY ueber die votes-Tabelle aggregieren muss.
+    # server_default '0': bestehende Zeilen bekommen sofort einen gueltigen Wert.
+    vote_count = Column(Integer, nullable=False, server_default=text('0'))
 
     owner = relationship("User")
     location = relationship("Location")
