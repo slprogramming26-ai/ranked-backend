@@ -23,6 +23,13 @@ def vote(vote: schemas.Vote, db: Session = Depends(database.get_dp),current_user
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"user {current_user.id} has already vote on post: {vote.post_id}")
         new_vote = models.Votes(post_id = vote.post_id, user_id = current_user.id)
         db.add(new_vote)
+        # Denormalisierten Zaehler atomar mitfuehren: SQL-seitiges +1 (kein
+        # Read-modify-write in Python -> keine Race Condition bei parallelen Votes).
+        # Laeuft im SELBEN commit wie die Vote-Zeile -> beide bleiben konsistent.
+        db.query(models.Post).filter(models.Post.id == vote.post_id).update(
+            {models.Post.vote_count: models.Post.vote_count + 1},
+            synchronize_session=False,
+        )
         db.commit()
         return {"message": "Sucessfully added vote"}
     
@@ -31,6 +38,11 @@ def vote(vote: schemas.Vote, db: Session = Depends(database.get_dp),current_user
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"user {current_user.id} did not vote on post: {vote.post_id}")
         
         vote_query.delete(synchronize_session = False)
+        # Gegenstueck zum Upvote: atomar -1 im selben commit wie das Loeschen.
+        db.query(models.Post).filter(models.Post.id == vote.post_id).update(
+            {models.Post.vote_count: models.Post.vote_count - 1},
+            synchronize_session=False,
+        )
         db.commit()
-        
+
         return {"message":"Sucessfully deleted vote"}
