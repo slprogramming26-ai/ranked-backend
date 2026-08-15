@@ -148,7 +148,9 @@ def get_posts(db: Session = Depends(get_dp),
         ).all()
     ]
 
-    vote_count = func.count(models.Votes.post_id)
+    # Denormalisierter Zaehler auf posts — kein JOIN/GROUP BY ueber votes mehr.
+    # Geschrieben wird er atomar in vote.py, die votes-Tabelle bleibt Quelle der Wahrheit.
+    vote_count = models.Post.vote_count
     age_hours = func.extract('epoch', func.now() - models.Post.created_at) / 3600
     i_follow_owner = db.query(models.Follows).filter(
         models.Follows.follower_id == current_user.id,
@@ -178,9 +180,7 @@ def get_posts(db: Session = Depends(get_dp),
 
 
 
-    posts_query = db.query(models.Post, vote_count.label("votes")) \
-    .join(models.Votes, models.Votes.post_id == models.Post.id, isouter=True) \
-    .group_by(models.Post.id) \
+    posts_query = db.query(models.Post) \
     .filter(models.Post.title.contains(search)) \
     .filter(models.Post.id.notin_(reported_post_ids))
 
@@ -200,7 +200,7 @@ def get_posts(db: Session = Depends(get_dp),
     .all()
 
     
-    post_ids = [post.id for post, _ in posts]
+    post_ids = [post.id for post in posts]
     liked_ids = {
         row.post_id
         for row in db.query(models.Votes.post_id).filter(
@@ -214,11 +214,11 @@ def get_posts(db: Session = Depends(get_dp),
     return [
         {
             "post": post,
-            "votes": votes,
+            "votes": post.vote_count,
             "is_mine": post.owner_id == current_user.id,
             "is_liked": post.id in liked_ids,
         }
-        for post, votes in posts
+        for post in posts
     ]
 
 @router.post("/",status_code=status.HTTP_201_CREATED,response_model= schemas.Post)
@@ -247,23 +247,20 @@ def create_posts(post: schemas.PostCreate, db: Session = Depends(get_dp), curren
 def get_post(id: int, response: Response, db: Session = Depends(get_dp), current_user: int = Depends(oauth2.get_current_user)):
 
 
-    post = db.query(models.Post, func.count(models.Votes.post_id).label("votes")).join(
-        models.Votes, models.Votes.post_id == models.Post.id, isouter=True
-    ).group_by(models.Post.id).filter(models.Post.id == id).first()
-
+    post = db.query(models.Post).filter(models.Post.id == id).first()
 
     if not post:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Post with id: {id} was not found")
-    
+
     liked = db.query(models.Votes).filter(
         models.Votes.user_id == current_user.id,
-        models.Votes.post_id == post[0].id,
+        models.Votes.post_id == post.id,
     ).first() is not None
-    
+
     return {
-        "post": post[0],
-        "votes": post[1],
-        "is_mine": post[0].owner_id == current_user.id,
+        "post": post,
+        "votes": post.vote_count,
+        "is_mine": post.owner_id == current_user.id,
         "is_liked": liked,
     }
 
