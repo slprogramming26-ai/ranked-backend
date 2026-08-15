@@ -1,0 +1,10 @@
+# Nur fuer die lokale Modellentwicklung (training/). NIEMALS von Railway
+# installieren lassen — torch allein sind ~800MB im Container.
+#
+# Installation:  ./venv/bin/pip install -r requirements-ml.txt
+#
+# Der Serving-Pfad (app/lytir/) darf KEINE dieser Abhaengigkeiten importieren.
+# Er kommt mit stdlib aus, spaeter ggf. onnxruntime (~30-60MB).
+
+torch>=2.2
+numpy>=1.26
