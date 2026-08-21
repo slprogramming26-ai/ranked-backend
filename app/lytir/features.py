@@ -130,6 +130,57 @@ def vibe_overlap(user_vibes, author_vibes) -> int:
     return len(a & b)
 
 
+def feature_input_from_orm(
+    post,
+    author,
+    current_user,
+    *,
+    i_follow_owner: bool,
+    comment_count: int = 0,
+    now: Optional[datetime] = None,
+) -> FeatureInput:
+    """SQLAlchemy-Objekte -> FeatureInput (Rohwerte, noch nicht skaliert).
+
+    Absichtlich ohne DB-Zugriff. i_follow_owner und comment_count muss der
+    Aufrufer fuer alle Kandidaten in EINER Query vorab holen, sonst baut man
+    sich beim Ranken von 200 Posts 400 Einzelqueries ein.
+
+    Das ist die EINZIGE Stelle, an der aus ORM-Objekten ein FeatureInput wird.
+    Zwei Aufrufer haengen dran: der Feed (der gleich weiter zu build_features
+    geht) und das Impression-Logging (das die Rohwerte als Snapshot wegschreibt).
+    Wuerde jeder sich sein FeatureInput selbst zusammenbauen, waere das die
+    perfekte Brutstelle fuer Training/Serving-Skew — eine Seite zaehlt
+    comment_count anders, und niemand findet es je.
+    """
+    now = now or datetime.now(timezone.utc)
+
+    created = post.created_at
+    if created.tzinfo is None:                     # DB liefert je nach Treiber naiv
+        created = created.replace(tzinfo=timezone.utc)
+
+    return FeatureInput(
+        age_hours=(now - created).total_seconds() / 3600.0,
+        vote_count=post.vote_count or 0,
+        comment_count=comment_count,
+        has_image=bool(post.image_url),
+        title_len=len(post.title or ""),
+        content_len=len(post.content or ""),
+        flag=post.flag,
+        created_hour=created.hour,
+        i_follow_owner=i_follow_owner,
+        vibe_overlap=vibe_overlap(
+            (current_user.vibe_factor_1, current_user.vibe_factor_2),
+            (author.vibe_factor_1, author.vibe_factor_2),
+        ),
+        same_location=(
+            post.location_id is not None
+            and post.location_id == current_user.location_id
+        ),
+        author_xp=author.xp or 0,
+        author_streak=author.streak_count or 0,
+    )
+
+
 def features_from_orm(
     post,
     author,
@@ -139,38 +190,14 @@ def features_from_orm(
     comment_count: int = 0,
     now: Optional[datetime] = None,
 ) -> List[float]:
-    """Adapter fuer den Serving-Pfad: SQLAlchemy-Objekte -> Feature-Vektor.
-
-    Absichtlich ohne DB-Zugriff. i_follow_owner und comment_count muss der
-    Aufrufer fuer alle Kandidaten in EINER Query vorab holen, sonst baut man
-    sich beim Ranken von 200 Posts 400 Einzelqueries ein.
-    """
-    now = now or datetime.now(timezone.utc)
-
-    created = post.created_at
-    if created.tzinfo is None:                     # DB liefert je nach Treiber naiv
-        created = created.replace(tzinfo=timezone.utc)
-
+    """Adapter fuer den Serving-Pfad: SQLAlchemy-Objekte -> Feature-Vektor."""
     return build_features(
-        FeatureInput(
-            age_hours=(now - created).total_seconds() / 3600.0,
-            vote_count=post.vote_count or 0,
-            comment_count=comment_count,
-            has_image=bool(post.image_url),
-            title_len=len(post.title or ""),
-            content_len=len(post.content or ""),
-            flag=post.flag,
-            created_hour=created.hour,
+        feature_input_from_orm(
+            post,
+            author,
+            current_user,
             i_follow_owner=i_follow_owner,
-            vibe_overlap=vibe_overlap(
-                (current_user.vibe_factor_1, current_user.vibe_factor_2),
-                (author.vibe_factor_1, author.vibe_factor_2),
-            ),
-            same_location=(
-                post.location_id is not None
-                and post.location_id == current_user.location_id
-            ),
-            author_xp=author.xp or 0,
-            author_streak=author.streak_count or 0,
+            comment_count=comment_count,
+            now=now,
         )
     )

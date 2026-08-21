@@ -451,3 +451,72 @@ class GroupKeyOut(BaseModel):
     encrypted_key: str
 
     model_config = ConfigDict(from_attributes=True)
+
+
+# =========================================================
+# Feed-Impressions (Trainingsdaten für Lytir)
+# =========================================================
+#
+# GRUNDREGEL FÜR DIESE ZWEI SCHEMAS: so wenig ablehnen wie irgend möglich.
+#
+# Der Client hat KEIN Retry. Er feuert den Batch ab, loggt einen Fehlerstatus
+# höchstens im Debug-Log und vergisst ihn. Jede strenge Validierung hier ist
+# damit keine Absicherung, sondern eine stille Datenverlust-Falle: ein 422 wegen
+# eines einzigen krummen Feldes wirft den KOMPLETTEN Batch weg, und niemand
+# merkt es.
+#
+# Deshalb wehren diese Schemas nur echten Unsinn ab (falsche Typen, absurde
+# Größenordnungen, Riesen-Payloads). Sie setzen bewusst KEINE Produktregeln
+# durch — die Unter-/Obergrenze für dwell_ms und die erlaubten feed_variant-Werte
+# kennt der Client, und wenn er sie in einer künftigen Version ändert, soll das
+# Backend die Daten trotzdem annehmen statt sie wortlos zu verschlucken.
+
+
+class ImpressionIn(BaseModel):
+    """Ein Post innerhalb eines Flushes.
+
+    Der Client schickt KUMULATIV: derselbe Post taucht bei jedem Flush erneut
+    auf, solange seine Uhr läuft — mit gewachsenem dwell_ms und ggf. gekippten
+    Booleans. Duplikate sind hier der Normalfall, nicht der Fehlerfall.
+    """
+
+    post_id: int = Field(gt=0)
+    # 0-basiert, beim ersten Sichtbarwerden festgehalten. Die Obergrenze ist reiner
+    # Unsinns-Schutz, keine echte Feed-Grenze (Pagination kann weit zählen).
+    position: int = Field(ge=0, le=100_000)
+    shown_at: datetime          # Client-Uhr, ISO8601 UTC ("Z"), 3 oder 6 Nachkommastellen
+    # Der Client kappt bei 180000 (genau dieser Wert heißt "gekappt", nicht
+    # "gemessen") und sendet unter 1000 gar nicht erst. Beides wird hier NICHT
+    # erzwungen — siehe Grundregel oben. le = 24h als reine Absurditätsgrenze.
+    dwell_ms: int = Field(ge=0, le=86_400_000)
+
+    # Vier getrennte Signale. reported ist NEGATIV, die anderen drei positiv —
+    # nicht zu einem "reacted" zusammenfalten, sonst lernt das Modell, gemeldete
+    # Posts häufiger auszuspielen.
+    voted: bool
+    opened_comments: bool
+    shared: bool
+    reported: bool
+
+
+class ImpressionBatch(BaseModel):
+    """Was der Client pro Flush hochlädt (10s-Timer oder Gate-Trigger).
+
+    user_id kommt aus dem Token, nie aus dem Body.
+    """
+
+    # Client-UUID pro Feed-Sitzung. Absichtlich str und nicht UUID: ein
+    # Formatfehler soll den Batch nicht kippen. Zusammen mit user_id und post_id
+    # ist das der Konflikt-Key des Upserts.
+    feed_session_id: str = Field(min_length=1, max_length=64)
+    # Aktuell "local" | "for_you". Bewusst kein Literal: ein neuer Feed-Typ im
+    # Frontend würde sonst jeden Batch mit 422 verwerfen, ohne dass es auffällt.
+    # Unbekannte Werte landen in der DB und werden im Router geloggt.
+    feed_variant: str = Field(min_length=1, max_length=32)
+    # Nur zur Schiefstands-Diagnose (Client-Uhr vs. Server-Uhr). Wird bewusst
+    # NICHT gespeichert: es ist ein Wert pro Batch, keiner pro Zeile.
+    client_sent_at: datetime
+    # Kein fachliches Limit — der Client kennt keins und schickt realistisch
+    # einstellige bis wenige dutzend Items. max_length ist nur ein Schutz davor,
+    # dass jemand 100k Zeilen in einem Request abliefert.
+    items: List[ImpressionIn] = Field(min_length=1, max_length=500)

@@ -1,6 +1,7 @@
 from .database import Base
 from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, UniqueConstraint, ForeignKeyConstraint, Index
 from sqlalchemy.sql.sqltypes import TIMESTAMP, DATE
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.sql.expression import null, text
 from sqlalchemy.orm import relationship
 from .database import Base
@@ -335,3 +336,73 @@ class Story(Base):
     created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text('now()'), index=True)
 
     owner = relationship("User")
+
+
+class FeedImpression(Base):
+    """Trainingsdaten fuer Lytir: welcher Post wurde wem im Feed WIRKLICH gezeigt.
+
+    Die votes-/ranking_scores-Tabellen kennen nur Reaktionen. Was fehlt, ist das
+    Gegenbeispiel — "gesehen und ignoriert". Ohne diese Zeilen hat das Modell nur
+    positive Beispiele und lernt nichts Unterscheidbares.
+
+    Der Client schickt KUMULATIV: dieselbe (feed_session_id, post_id) kommt bei
+    jedem Flush erneut, mit gewachsenem dwell_ms. Das ist kein Retry-Fehlerfall,
+    sondern das normale Verhalten -> der Endpunkt macht ein Upsert auf dem
+    Unique-Index unten, kein blindes Insert.
+
+    Beta-Tabelle: sie wird nur geschrieben und einmal zum Export gelesen.
+    """
+
+    __tablename__ = 'feed_impressions'
+
+    id = Column(Integer, primary_key=True, nullable=False)
+    # Kommt aus dem Token, nie aus dem Body.
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    post_id = Column(Integer, ForeignKey("posts.id", ondelete="CASCADE"), nullable=False)
+
+    # Vom Client erzeugte UUID pro Feed-Sitzung (neu bei Initial-Load, Pull-to-Refresh
+    # und Feed-Wechsel, NICHT bei Pagination). Als String wie client_msg_id bei Message.
+    feed_session_id = Column(String, nullable=False)
+    feed_variant = Column(String, nullable=False)          # "local" | "for_you"
+
+    # 0-basiert, beim ERSTEN Sichtbarwerden festgehalten und danach nie geaendert.
+    # Braucht man beim Training gegen den Position-Bias: Platz 0 wird immer mehr
+    # gesehen als Platz 9, unabhaengig davon wie gut der Post ist.
+    position = Column(Integer, nullable=False)
+    shown_at = Column(TIMESTAMP(timezone=True), nullable=False)   # Client-Uhr
+    # Summe aller Sichtbarkeitsphasen. Untergrenze 1000 (darunter sendet der Client
+    # gar nicht), Obergrenze 180000 — genau 180000 heisst "gekappt", nicht gemessen.
+    dwell_ms = Column(Integer, nullable=False)
+
+    # Vier getrennte Signale, bewusst NICHT zu einem "reacted" zusammengefaltet:
+    # reported ist negativ, die anderen drei sind positiv. Ein ODER ueber alle vier
+    # wuerde dem Modell beibringen, gemeldete Posts oefter auszuspielen.
+    voted = Column(Boolean, nullable=False, server_default=text('false'))
+    opened_comments = Column(Boolean, nullable=False, server_default=text('false'))
+    shared = Column(Boolean, nullable=False, server_default=text('false'))
+    reported = Column(Boolean, nullable=False, server_default=text('false'))
+
+    # Snapshot der ROHWERTE (FeatureInput), nicht des fertigen Vektors: so laesst
+    # sich build_features() spaeter in jeder Version neu drueberlaufen lassen.
+    # Wird nur beim INSERT gesetzt und beim Upsert NIE ueberschrieben — der erste
+    # Flush liegt am naechsten am tatsaechlichen Anzeigezeitpunkt.
+    # nullable, damit ein inzwischen geloeschter Post nicht den ganzen Batch kippt.
+    features = Column(JSONB, nullable=True)
+    feature_version = Column(Integer, nullable=True)
+
+    received_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text('now()'))
+
+    __table_args__ = (
+        # Konflikt-Ziel des Upserts. user_id ist bewusst Teil des Keys: die
+        # feed_session_id kommt vom Client, ohne user_id koennte ein fremder Client
+        # mit geratener Session-ID die Zeilen eines ANDEREN Users ueberschreiben.
+        # Gleiches Muster wie uq_message_sender_client_msg_id.
+        Index(
+            'uq_feed_impression_user_session_post',
+            'user_id', 'feed_session_id', 'post_id',
+            unique=True,
+        ),
+    )
+
+
+
