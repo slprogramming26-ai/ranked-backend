@@ -280,7 +280,22 @@ def delete_account(current_user = Depends(oauth2.get_current_user),
     # 2. Profilbild löschen
     delete_s3_object(current_user.profile_picture_url, db)
 
-    # 3. User aus DB löschen -> CASCADE räumt posts/votes/comments automatisch auf
+    # 3. Denormalisierten Zaehler korrigieren, BEVOR CASCADE die Votes wegraeumt.
+    # Die Votes dieses Users liegen groesstenteils auf FREMDEN Posts — die
+    # bleiben bestehen, ihr vote_count wuerde sonst dauerhaft zu hoch stehen.
+    voted_post_ids = [
+        row.post_id
+        for row in db.query(models.Votes.post_id).filter(
+            models.Votes.user_id == current_user.id,
+        ).all()
+    ]
+    if voted_post_ids:
+        db.query(models.Post).filter(models.Post.id.in_(voted_post_ids)).update(
+            {models.Post.vote_count: models.Post.vote_count - 1},
+            synchronize_session=False,
+        )
+
+    # 4. User aus DB löschen -> CASCADE räumt posts/votes/comments automatisch auf
     db.query(models.User).filter(models.User.id == current_user.id) \
         .delete(synchronize_session=False)
     db.commit()
