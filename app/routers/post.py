@@ -158,7 +158,6 @@ def get_posts(db: Session = Depends(get_dp),
     ).exists()
 
     follow_bonus = case((i_follow_owner, FEED_FOLLOW_BONUS), else_=0)
-
     my_vibes = [current_user.vibe_factor_1, current_user.vibe_factor_2]
 
     same_vibes = db.query(models.User).filter(
