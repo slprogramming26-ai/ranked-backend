@@ -2,3 +2,7 @@ __pycache__
 venv/
 .env
 
+# Schreibt der SQL-Snapshot-Test bei Abweichung daneben, damit man den Diff
+# pruefen kann. Reines Arbeitsmaterial — der Sollzustand ist sql_snapshot.sql.
+tests/sql_snapshot.aktuell.sql
+

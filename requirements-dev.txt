@@ -1,0 +1,3 @@
+# Nur fuer die lokale Entwicklung — NICHT auf Railway installieren.
+# Installieren mit:  pip install -r requirements-dev.txt
+pytest==8.4.2
