@@ -23,6 +23,12 @@ class Settings(BaseSettings):
     location_admin_secret: str
     group_join_code_cleanup_secret: str
     redis_url: str
+    # Secret, mit dem der Go-WS-Gateway die internen Push-Endpoints aufruft.
+    # Muss als Header "X-WS-Secret" mitgeschickt werden.
+    # ACHTUNG: Wer den Endpoint OHNE gültiges Secret erreicht, kann als
+    # beliebiger Nutzer Nachrichten schreiben -> starkes Secret Pflicht.
+    ws_internal_secret: str
+
 
 
     model_config = ConfigDict(env_file=".env")

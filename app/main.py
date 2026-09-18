@@ -2,10 +2,10 @@ from fastapi import FastAPI
 from . import models
 from .database import engine
 from .routers import group_chat, post, user, auth, vote, comment,location, cleanup, ranking, follow, message, key, story, report, impression
-from .ws import routes as ws_routes
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from .limiter import limiter          # <- der EINE Limiter aus limiter.py
+from .ws import routes as ws_routes, internals as ws_internal
 
 
 
@@ -17,7 +17,6 @@ app = FastAPI()
 
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
-
 
 
 
@@ -37,6 +36,8 @@ app.include_router(report.router)
 app.include_router(location.router)
 app.include_router(cleanup.router)
 app.include_router(impression.router)
+app.include_router(ws_internal.router)
+
 
 
 # models.Base.metadata.create_all(bind=engine)
