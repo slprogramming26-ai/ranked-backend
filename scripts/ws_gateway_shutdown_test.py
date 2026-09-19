@@ -28,6 +28,7 @@ ws-gateway.exe ist frisch gebaut (go build -o ws-gateway.exe .).
 """
 
 import asyncio
+import json
 import os
 import signal
 import socket
@@ -68,6 +69,17 @@ ergebnisse: list[bool] = []
 def pruefe(label: str, ok: bool, detail: str) -> None:
     ergebnisse.append(ok)
     print(f"[{'OK    ' if ok else 'FEHLER'}] {label}: {detail}")
+
+
+def json_zeilen(text: str) -> list[dict]:
+    """Die JSON-Zeilen aus dem Go-Log; alles andere (z. B. Laufzeit-Meldungen) faellt raus."""
+    zeilen = []
+    for z in text.splitlines():
+        try:
+            zeilen.append(json.loads(z))
+        except ValueError:
+            pass
+    return zeilen
 
 
 def port_frei() -> bool:
@@ -194,11 +206,12 @@ async def main() -> None:
 
     # Drei Sockets, aber nur zwei Nutzer: die beiden Zahlen muessen sich
     # unterscheiden, sonst zaehlt closeAll wieder Nutzer statt Sockets.
-    zeile = next((z for z in out.splitlines() if "abgemeldet" in z), "")
+    # Seit slog (2026-09-19) loggt Go JSON - die Zahlen sind Felder, kein Text.
+    eintrag = next((e for e in json_zeilen(out) if "verbindungen" in e and "nutzer" in e), None)
     pruefe(
         "06 Log meldet 3 Sockets und 2 Nutzer",
-        "3 verbindungen geschlossen" in zeile and "2 nutzer abgemeldet" in zeile,
-        zeile.strip() or "keine Abmeldezeile im Log",
+        eintrag is not None and eintrag["verbindungen"] == 3 and eintrag["nutzer"] == 2,
+        str(eintrag) if eintrag else "keine Abmeldezeile im Log",
     )
 
     print("\n--- Go-Log ---")

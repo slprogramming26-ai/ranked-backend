@@ -13,6 +13,7 @@ from ..xp_config import XP_PER_SESSION, XP_PER_POINT_RECEIVED, STREAK_MILESTONE_
 from datetime import datetime, timedelta, timezone, date, time
 from typing import Optional
 import random
+import redis
 
 
 router = APIRouter(
@@ -335,8 +336,14 @@ def swipe_session(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not save swipes")
     
     leaderboard_key = f"leaderboard:{today.isoformat()}"
-    redis_client.zincrby(leaderboard_key, total_points, str(session.target_user_id))
-    redis_client.expire(leaderboard_key, 172800)
+    try:
+        redis_client.zincrby(leaderboard_key, total_points, str(session.target_user_id))
+        redis_client.expire(leaderboard_key, 172800)
+    except redis.RedisError as e:
+        # Swipes, XP und Streak sind schon gespeichert. Ohne Redis fehlen die Punkte
+        # nur in der heutigen Live-Rangliste; der Tagesbonus rechnet aus SQL.
+        print(f"Warnung: leaderboard-update fehlgeschlagen für User {session.target_user_id}: {e}")
+
 
 
 
