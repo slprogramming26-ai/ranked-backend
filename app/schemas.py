@@ -311,7 +311,7 @@ class GroupChatMessageIn(BaseModel):
     to: int  # group_chat_id
     message: str = Field(min_length=1, max_length=4096)
     # Mit welcher Schlüssel-Epoche der Client die message verschlüsselt hat.
-    # Der Server prüft das gegen die aktuelle Epoche der Gruppe (siehe _prepare_group_send).
+    # Der Server prüft das gegen die aktuelle Epoche der Gruppe (siehe prepare_group_send).
     key_version: int
     client_msg_id: Optional[str] = None
 

@@ -1,10 +1,7 @@
-from fastapi import WebSocket
-from typing import Dict
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
-from .. import models, schemas
-from fastapi.concurrency import run_in_threadpool
+from .. import models
 
 
 class ChatError(Exception):
@@ -12,8 +9,7 @@ class ChatError(Exception):
 
     Wir werfen einen normalen Python-Fehler statt HTTPException, weil HTTPException
     im WebSocket-Kontext nicht funktioniert (kein HTTP-Response möglich).
-    Die Route fängt den hier, packt das in eine `kind: "error"`-Nachricht und
-    schickt sie über den Socket zurück."""
+    internals.py fängt den hier und gibt ihn als kind: "error" zurück (HTTP 200), Go reicht das an den Client durch."""
 
 
 class RekeyRequired(ChatError):
@@ -33,20 +29,11 @@ class KeyOutdated(ChatError):
         self.current_version = current_version
 
 
-async def _safe_send(socket: WebSocket, payload: dict) -> bool:
-    """Send über einen Socket der vielleicht schon tot ist.
-    True = raus, False = Socket kaputt (Caller behandelt das wie offline)."""
-    try:
-        await socket.send_json(payload)
-        return True
-    except Exception:
-        return False
 
 
 class ConnectionManager:
     
-    def __init__(self):
-        self.active_connections: Dict[int, WebSocket] = {}
+
 
     def blocked_user_ids(self, user_id: int, db: Session) -> set:
         """Alle User-IDs, mit denen `user_id` eine Block-Beziehung hat —
@@ -74,20 +61,10 @@ class ConnectionManager:
 
 
 
-    async def accept(self, websocket: WebSocket):
-        await websocket.accept()
-
-    def register(self, user_id: int, websocket: WebSocket):
-        """Merkt sich den aktiven Socket des Users für Live-Pushes.
-        Verpasstes holt der Client selbst per REST (GET /messages?since=…),
-        deshalb ist hier keine Flush-/Reihenfolge-Logik mehr nötig."""
-        self.active_connections[user_id] = websocket
-
-    def disconnect(self, user_id: int):
-        self.active_connections.pop(user_id, None)
 
 
-    def _prepare_dm_send(self,
+
+    def prepare_dm_send(self,
         sender_id: int,
         recipient_id: int,
         content: str,
@@ -137,52 +114,10 @@ class ConnectionManager:
         return message.created_at, True
 
 
-    async def send_to_user(
-        self,
-        sender_id: int,
-        recipient_id: int,
-        content: str,
-        db: Session,
-        client_msg_id: str | None = None,
-    ) -> int:
-
-        # Phase 1: DB-Arbeit im Threadpool (ein Hop), gibt nur einfache Daten zurück.
-        created_at, is_new = await run_in_threadpool(
-            self._prepare_dm_send,
-            sender_id,
-            recipient_id,
-            content,
-            db,
-            client_msg_id,
-        )
-
-        # Duplikat (Reconnect-Race): schon gespeichert und ggf. schon gepusht.
-        # Verpasstes holt der Empfaenger per REST — kein zweiter Push, nur Ack.
-        if not is_new:
-            return 0
-
-        # Phase 2: der Live-Send MUSS auf dem Event-Loop bleiben (echtes async).
-        socket = self.active_connections.get(recipient_id)
-        if socket is not None:
-            out = schemas.ChatMessageOut(
-                sender_id=sender_id,
-                message=content,
-                created_at=created_at,
-                client_msg_id=client_msg_id,
-            )
-            # mode="json" → datetime wird als ISO-String serialisiert,
-            # nicht als Python-datetime-Objekt (das wäre nicht JSON-fähig).
-            if await _safe_send(socket, out.model_dump(mode="json")):
-                return 1
-            # Send fehlgeschlagen → Socket ist tot, raus aus der Map.
-            # Die Nachricht ist schon gespeichert, der Client holt sie beim Reconnect.
-            self.active_connections.pop(recipient_id, None)
-
-        return 0
 
     # Group Messages
 
-    def _prepare_group_send(
+    def prepare_group_send(
             self,
         sender_id: int,
         group_chat_id: int,
@@ -230,7 +165,8 @@ class ConnectionManager:
             db.commit()
         except IntegrityError:
             # Duplikat (Reconnect-Race): schon gespeichert -> idempotent behandeln.
-            # Leere Empfaengerliste = der Fanout unten macht schlicht nichts mehr.
+            # Leere Empfaengerliste = publisher.push schickt an niemanden.
+
             db.rollback()
             # Gleiche Absicherung wie bei DMs: ohne client_msg_id kein Duplikat-Lookup.
             existing = None
@@ -259,62 +195,6 @@ class ConnectionManager:
         return message.created_at, [m.participant_id for m in members]
 
 
-
-
-    async def send_to_group(
-        self,
-        sender_id: int,
-        group_chat_id: int,
-        content: str,
-        key_version: int,
-        db: Session,
-        client_msg_id: str | None = None,
-    ) -> int:
-        """Gruppen-Nachricht speichern und an alle ONLINE-Mitglieder (außer Sender) live verteilen.
-
-        Return: Anzahl der LIVE ausgelieferten Empfänger. Offline-Mitglieder holen sich
-                die Nachricht später per REST ("seit Zeitstempel X")."""
-
-        # Phase 1: die komplette DB-Arbeit im Threadpool (ein Hop), gibt nur einfache Daten zurück.
-        created_at, recipient_ids = await run_in_threadpool(
-            self._prepare_group_send,
-            sender_id,
-            group_chat_id,
-            content,
-            key_version,
-            db,
-            client_msg_id,
-        )
-
-        # Phase 2: die Live-Sends MÜSSEN auf dem Event-Loop bleiben (echtes async).
-        out = schemas.GroupChatMessageOut(
-            group_chat_id=group_chat_id,
-            sender_id=sender_id,
-            message=content,
-            created_at=created_at,
-            key_version=key_version,
-            client_msg_id=client_msg_id,
-        )
-        payload = out.model_dump(mode="json")
-
-        delivered_live = 0
-        dead_sockets = []   # User deren Socket beim Send gestorben ist → aus Map raus
-
-        # recipient_ids ist eine Liste von participant_ids (ints).
-        for uid in recipient_ids:
-            socket = self.active_connections.get(uid)
-            if socket is None:
-                continue  # offline → holt sich die Nachricht später per REST
-            if await _safe_send(socket, payload):
-                delivered_live += 1
-            else:
-                # Socket kaputt → später aus Map räumen. Nachricht ist schon gespeichert.
-                dead_sockets.append(uid)
-
-        for uid in dead_sockets:
-            self.active_connections.pop(uid, None)
-
-        return delivered_live
 
 
 manager = ConnectionManager()

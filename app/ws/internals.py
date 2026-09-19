@@ -77,7 +77,7 @@ def push_dm(incoming: InternalDmIn) -> dict:
     """Antwort = wörtlich das JSON, das Go dem Sender zurückreicht."""
     with _db_scope() as db:
         try:
-            created_at, is_new = manager._prepare_dm_send(
+            created_at, is_new = manager.prepare_dm_send(
                 sender_id=incoming.sender_id,
                 recipient_id=incoming.to,
                 content=incoming.message,
@@ -111,7 +111,7 @@ def push_group(incoming: InternalGroupIn) -> dict:
     """Antwort = wörtlich das JSON, das Go dem Sender zurückreicht."""
     with _db_scope() as db:
         try:
-            created_at, recipient_ids = manager._prepare_group_send(
+            created_at, recipient_ids = manager.prepare_group_send(
                 sender_id=incoming.sender_id,
                 group_chat_id=incoming.to,
                 content=incoming.message,

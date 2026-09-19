@@ -5,7 +5,7 @@ from .routers import group_chat, post, user, auth, vote, comment,location, clean
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from .limiter import limiter          # <- der EINE Limiter aus limiter.py
-from .ws import routes as ws_routes, internals as ws_internal
+from .ws import internals as ws_internal
 
 
 
@@ -27,7 +27,6 @@ app.include_router(vote.router)
 app.include_router(comment.router)
 app.include_router(ranking.router)
 app.include_router(follow.router)
-app.include_router(ws_routes.router)
 app.include_router(group_chat.router)
 app.include_router(message.router)
 app.include_router(key.router)
