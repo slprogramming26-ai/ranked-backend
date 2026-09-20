@@ -6,3 +6,7 @@ venv/
 # pruefen kann. Reines Arbeitsmaterial — der Sollzustand ist sql_snapshot.sql.
 tests/sql_snapshot.aktuell.sql
 
+# Simulierte Lytir-Trainingsdaten (training/simulate.py). Erfunden und
+# jederzeit aus SEED 42 neu erzeugbar — gehoert nicht ins Repo.
+training/data/
+

@@ -8,3 +8,7 @@
 
 torch>=2.2
 numpy>=1.26
+
+onnx>=1.23
+onnxscript>=0.7     # der neue ONNX-Exporter von torch baut darauf auf
+onnxruntime>=1.30   # fuehrt .onnx-Dateien aus — hier zum Nachpruefen

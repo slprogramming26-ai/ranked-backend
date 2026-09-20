@@ -6,6 +6,7 @@ Zielwert pro Zeile).
 
 Aufbau, in dieser Reihenfolge:
     1. load_rows()         Query gegen feed_impressions, inkl. Filter
+       load_rows_from_file()  dieselben Zeilen aus einer JSONL-Datei
     2. rows_to_arrays()    JSONB-Snapshot -> FeatureInput -> Feature-Vektor
     3. split_rows()        Aufteilung Training/Validierung, nach Session
     4. build_dataset()     alles zusammen -> vier Tensoren
@@ -17,6 +18,10 @@ Wie model.py liegt auch diese Datei bewusst ausserhalb von app/: sie importiert
 torch, und torch soll nie im Railway-Container landen.
 """
 
+import json
+import sys
+from datetime import datetime
+from pathlib import Path
 from typing import List, NamedTuple, Tuple
 
 import torch
@@ -63,6 +68,28 @@ def load_rows(db) -> List[models.FeedImpression]:
     # gehen in EIN Modell. Die Variante ist kein Feature des Posts, sondern der
     # Anzeigekontext — zwei getrennte Modelle wuerden die ohnehin knappen Daten
     # halbieren.
+
+
+def load_rows_from_file(pfad: Path) -> List[models.FeedImpression]:
+    """Dieselben Zeilen wie load_rows(), aber aus einer JSONL-Datei.
+
+    Die Objekte sind echte FeedImpression-Instanzen, die nie eine Session
+    sehen. Kein db.add(), also wird auch nie etwas gespeichert. Dadurch
+    merken split_rows() und rows_to_arrays() nicht, woher die Zeilen kommen.
+
+    Die beiden Filter aus load_rows() fehlen hier bewusst: die Datei wird
+    immer aus dem aktuellen Code erzeugt (keine alte FEATURE_VERSION), und
+    simulierte Zeilen haben keinen Besitzer (keine eigenen Posts).
+    """
+    rows: List[models.FeedImpression] = []
+
+    with pfad.open(encoding="utf-8") as f:
+        for zeile in f:
+            d = json.loads(zeile)
+            d["shown_at"] = datetime.fromisoformat(d["shown_at"])
+            rows.append(models.FeedImpression(**d))
+
+    return rows
 
 
 # --------------------------------------------------------------------------
@@ -222,9 +249,12 @@ def _tensor_y(y: List[float]) -> torch.Tensor:
     return torch.tensor(y, dtype=torch.float32)
 
 
-def build_dataset(db) -> Dataset:
-    """Der komplette Weg: Datenbank -> vier fertige Tensoren."""
-    rows = load_rows(db)
+def build_dataset(rows: List[models.FeedImpression]) -> Dataset:
+    """Zeilen -> vier fertige Tensoren.
+
+    Woher die Zeilen kommen (Datenbank oder Datei), entscheidet der
+    Aufrufer. Diese Funktion weiss es nicht und muss es nicht wissen.
+    """
     train_rows, val_rows = split_rows(rows)
 
     # rows_to_arrays laeuft je Haelfte einmal — die Funktion selbst weiss vom
@@ -241,11 +271,19 @@ def build_dataset(db) -> Dataset:
 
 
 if __name__ == "__main__":
-    db = SessionLocal()
-    try:
-        ds = build_dataset(db)
-    finally:
-        db.close()
+    # Mit Pfad -> Datei, ohne -> Datenbank:
+    #   python -m training.dataset training/data/sim.jsonl
+    #   python -m training.dataset
+    if len(sys.argv) > 1:
+        rows = load_rows_from_file(Path(sys.argv[1]))
+    else:
+        db = SessionLocal()
+        try:
+            rows = load_rows(db)
+        finally:
+            db.close()
+
+    ds = build_dataset(rows)
 
     print()
     print(f"  X_train {tuple(ds.X_train.shape)}  {ds.X_train.dtype}")
@@ -253,5 +291,5 @@ if __name__ == "__main__":
     print(f"  X_val   {tuple(ds.X_val.shape)}  {ds.X_val.dtype}")
     print(f"  y_val   {tuple(ds.y_val.shape)}  {ds.y_val.dtype}")
     print()
-    print("  y_train:", [round(v, 3) for v in ds.y_train.tolist()])
+    print("  y_train, erste 10:", [round(v, 3) for v in ds.y_train[:10].tolist()])
     print()

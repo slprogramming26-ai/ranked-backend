@@ -46,6 +46,24 @@ IMAGE_ATTENTION_S = 2.0
 DWELL_SATURATION_RATIO = 3.0
 
 
+def expected_read_seconds(*, content_len: int, has_image: bool) -> float:
+    """Wie lange braucht ein Mensch fuer DIESEN Post ungefaehr.
+
+    Eigene Funktion, weil zwei Seiten sie brauchen: compute_label() unten
+    rechnet die gemessene Zeit dagegen, der Simulator in training/ erzeugt
+    seine dwell-Werte damit. Zwei Kopien derselben Formel waeren genau der
+    Fehler, den features.py fuer die Features verhindert.
+
+    Kann nie 0 werden (BASE_ATTENTION_S > 0) -> die Division unten ist sicher.
+    """
+    return (
+        BASE_ATTENTION_S
+        + max(content_len, 0) / READ_CHARS_PER_SEC
+        + (IMAGE_ATTENTION_S if has_image else 0.0)
+    )
+
+
+
 def compute_label(
     *,
     voted: bool,
@@ -88,11 +106,10 @@ def compute_label(
 
     # Wie lange braucht ein Mensch fuer DIESEN Post ungefaehr.
     # Kann nie 0 werden (BASE_ATTENTION_S > 0) -> die Division unten ist sicher.
-    erwartet_s = (
-        BASE_ATTENTION_S
-        + max(content_len, 0) / READ_CHARS_PER_SEC
-        + (IMAGE_ATTENTION_S if has_image else 0.0)
+    erwartet_s = expected_read_seconds(
+        content_len=content_len, has_image=has_image
     )
+
 
     # DER entscheidende Schritt: nicht die rohe Verweildauer, sondern die
     # Verweildauer IM VERHAELTNIS zur erwarteten Lesezeit.
