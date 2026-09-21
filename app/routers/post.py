@@ -7,11 +7,9 @@ import io
 import boto3
 from ..config import settings
 import uuid
-from sqlalchemy import func, case, or_
-from .. import models, schemas, oauth2
+from .. import models, schemas, oauth2, feed
 from ..database import get_dp
-from ..ranking_config import FEED_VOTE_WEIGHT, FEED_AGE_PENALTY_PER_HOUR, FEED_FOLLOW_BONUS, FEED_VIBE_BONUS, FEED_MAX_AGE_DAYS
-from datetime import datetime, timedelta, timezone
+
 
 
 router = APIRouter(
@@ -126,6 +124,8 @@ async def upload_post_image(
 
 
 
+
+
 @router.get("/", response_model=List[schemas.PostOut])
 def get_posts(db: Session = Depends(get_dp), 
               current_user: int = Depends(oauth2.get_current_user), 
@@ -138,76 +138,13 @@ def get_posts(db: Session = Depends(get_dp),
     if local and current_user.location_id is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="user has no location set")
 
-    # Stufe B vom Report-System: Posts, die ICH gemeldet habe, sehe ich nicht mehr.
-    # post_id.isnot(None) schließt User-Reports aus (die haben post_id = NULL).
-    reported_post_ids = [
-        row.post_id
-        for row in db.query(models.Report.post_id).filter(
-            models.Report.reporter_id == current_user.id,
-            models.Report.post_id.isnot(None),
-        ).all()
-    ]
-
-    # Denormalisierter Zaehler auf posts — kein JOIN/GROUP BY ueber votes mehr.
-    # Geschrieben wird er atomar in vote.py, die votes-Tabelle bleibt Quelle der Wahrheit.
-    vote_count = models.Post.vote_count
-    age_hours = func.extract('epoch', func.now() - models.Post.created_at) / 3600
-    i_follow_owner = db.query(models.Follows).filter(
-        models.Follows.follower_id == current_user.id,
-        models.Follows.followee_id == models.Post.owner_id,
-    ).exists()
-
-    follow_bonus = case((i_follow_owner, FEED_FOLLOW_BONUS), else_=0)
-    my_vibes = [current_user.vibe_factor_1, current_user.vibe_factor_2]
-
-    same_vibes = db.query(models.User).filter(
-        models.User.id == models.Post.owner_id,
-        or_(
-            models.User.vibe_factor_1.in_(my_vibes),
-            models.User.vibe_factor_2.in_(my_vibes),
-        ),
-    ).exists()
-
-    category_bonus = case((same_vibes, FEED_VIBE_BONUS), else_=0)
-
-    score = FEED_VOTE_WEIGHT * vote_count \
-          - FEED_AGE_PENALTY_PER_HOUR * age_hours \
-          + follow_bonus \
-          + category_bonus
-
-
-
-
-
-    posts_query = db.query(models.Post) \
-    .filter(models.Post.title.contains(search)) \
-    .filter(models.Post.id.notin_(reported_post_ids))
-
-    if local:
-        posts_query = posts_query.filter(models.Post.location_id == current_user.location_id)
-
-    # Kandidatenmenge begrenzen: nur beim normalen Feed (ohne Suche).
-    # Wer aktiv nach einem Titel SUCHT, soll auch alte Posts finden koennen.
-    if not search:
-        feed_cutoff = datetime.now(timezone.utc) - timedelta(days=FEED_MAX_AGE_DAYS)
-        posts_query = posts_query.filter(models.Post.created_at >= feed_cutoff)
-
-    posts = posts_query \
-    .order_by(score.desc(), models.Post.created_at.desc()) \
-    .limit(limit) \
-    .offset(skip) \
-    .all()
-
-    
-    post_ids = [post.id for post in posts]
-    liked_ids = {
-        row.post_id
-        for row in db.query(models.Votes.post_id).filter(
-            models.Votes.user_id == current_user.id,
-            models.Votes.post_id.in_(post_ids),
-        ).all()
-    }
-
+    zeilen = feed.seite_holen(
+        db, current_user,
+        limit=limit,
+        skip=skip,
+        search=search,
+        local=local,
+    )
 
 
     return [
@@ -215,10 +152,13 @@ def get_posts(db: Session = Depends(get_dp),
             "post": post,
             "votes": post.vote_count,
             "is_mine": post.owner_id == current_user.id,
-            "is_liked": post.id in liked_ids,
+            "is_liked": is_liked,
         }
-        for post in posts
+        # i_follow_owner und comment_count sind bis 6b ungenutzt — sie kommen
+        # jetzt schon mit, damit der Ranker spaeter keinen zweiten Rundweg braucht.
+        for post, is_liked, i_follow_owner, comment_count in zeilen
     ]
+
 
 @router.post("/",status_code=status.HTTP_201_CREATED,response_model= schemas.Post)
 def create_posts(post: schemas.PostCreate, db: Session = Depends(get_dp), current_user: int = Depends(oauth2.get_current_user)):

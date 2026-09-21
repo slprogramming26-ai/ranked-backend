@@ -43,3 +43,24 @@ FEED_VIBE_BONUS = 20
 FEED_MAX_AGE_DAYS = 30
 
 
+# --- Lytir: Rerank + Reihenfolge-Cache (Schritt 6a) ---
+
+# Wie viele Posts die Kandidaten-Query holt, BEVOR Lytir neu sortiert.
+# Gemessen am 2026-09-20: limit=10 = 1,1 Rundwege, limit=150 = 1,3 Rundwege.
+# Zeilen sind praktisch gratis, der Preis ist der Rundweg selbst.
+FEED_CANDIDATE_LIMIT = 150
+
+# Wie lange die fertige Reihenfolge (eine Liste von Post-IDs) in Redis liegt.
+# 300 s = lang genug fuer eine Scroll-Sitzung, kurz genug, dass neue Posts
+# schnell auftauchen. Kuerzer waere schlechter: dann wechselt die Reihenfolge
+# mitten im Scrollen und der Nutzer sieht Posts doppelt.
+FEED_ORDER_CACHE_TTL = 300
+
+# Schalter fuers Lytir-Rerank. Solange False verhaelt sich der Feed exakt wie
+# heute: SQL sortiert, SQL schneidet. Bewusst eine Code-Konstante und keine
+# Env-Variable — das ist keine Ops-Entscheidung, sondern haengt an einem
+# trainierten Modell. Im Git soll sichtbar sein, WANN sie umgelegt wurde.
+LYTIR_RERANK_ENABLED = False
+
+
+
