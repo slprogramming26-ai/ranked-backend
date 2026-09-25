@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 from typing import List, Optional
 from PIL import Image
 import io
+import re
 import boto3
 from ..config import settings
 import uuid
@@ -51,7 +52,18 @@ def delete_s3_object(image_url: str | None, db: Session):
 
 
 
-def _process_and_upload_image(contents: bytes) -> str:
+def check_post_image_url(image_url: str | None, owner_id: int):
+    """Lässt nur Bilder zu, die DIESER User über POST /posts/upload hochgeladen hat.
+    Der Dateiname enthält die owner_id (siehe _process_and_upload_image) -> fremde
+    Domains und Bilder anderer User fallen raus, ohne DB-Abfrage."""
+    if image_url is None:
+        return
+    prefix = f"{settings.supabase_url}/storage/v1/object/public/{BUCKET_NAME}/posts/{owner_id}_"
+    if not re.fullmatch(re.escape(prefix) + r"[0-9a-f]{32}\.jpg", image_url):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid image_url")
+
+
+def _process_and_upload_image(contents: bytes, owner_id: int) -> str:
     """Der BLOCKIERENDE Teil: Pillow-Verarbeitung (CPU) + S3-Upload (sync I/O).
     Läuft im Threadpool (siehe run_in_threadpool unten), damit der Event-Loop
     NICHT einfriert, während ein Bild verarbeitet/hochgeladen wird.
@@ -77,7 +89,7 @@ def _process_and_upload_image(contents: bytes) -> str:
     buffer.seek(0)
 
     # Upload zu Supabase
-    file_name = f"posts/{uuid.uuid4().hex}.jpg"
+    file_name = f"posts/{owner_id}_{uuid.uuid4().hex}.jpg"
     s3_client.upload_fileobj(
         buffer,
         BUCKET_NAME,
@@ -108,7 +120,7 @@ async def upload_post_image(
 
     # 3. Den schweren Teil im Threadpool ausführen -> Event-Loop bleibt frei.
     try:
-        url = await run_in_threadpool(_process_and_upload_image, contents)
+        url = await run_in_threadpool(_process_and_upload_image, contents, current_user.id)
     except HTTPException:
         raise  # echte Validierungsfehler (z.B. zu viele Pixel) durchlassen
     except Exception as e:
@@ -162,8 +174,9 @@ def get_posts(db: Session = Depends(get_dp),
 
 @router.post("/",status_code=status.HTTP_201_CREATED,response_model= schemas.Post)
 def create_posts(post: schemas.PostCreate, db: Session = Depends(get_dp), current_user: int = Depends(oauth2.get_current_user)):
-    
-    
+
+    check_post_image_url(post.image_url, current_user.id)
+
     if post.location_id is not None:
         location_exists = db.query(models.Location).filter(models.Location.id == post.location_id).first()
         if not location_exists:
@@ -236,8 +249,18 @@ def update_post(id: int,updated_post: schemas.PostCreate, db: Session = Depends(
 
     if post.owner_id != current_user.id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"Not authorize to perform requested action")
-    
+
+    # Nur prüfen, wenn sich das Bild ändert -> alte Posts mit altem Dateinamen
+    # (ohne owner_id) bleiben editierbar, solange das Bild gleich bleibt.
+    old_image_url = post.image_url
+    image_changed = updated_post.image_url != old_image_url
+    if image_changed:
+        check_post_image_url(updated_post.image_url, current_user.id)
+
     post_query.update(updated_post.dict(),synchronize_session = False)
     db.commit()
+
+    if image_changed:
+        delete_s3_object(old_image_url, db)
 
     return post_query.first()

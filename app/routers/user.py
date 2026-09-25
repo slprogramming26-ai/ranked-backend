@@ -12,6 +12,7 @@ from .. import models, schemas, oauth2,utils
 from ..database import get_dp
 from ..xp_config import get_league, get_effective_streak
 from .post import delete_s3_object as delete_post_image
+from .story import delete_s3_object as delete_story_image
 from ..limiter import limiter        # oben dazu
 
 
@@ -52,7 +53,7 @@ def delete_s3_object(image_url: str | None, db: Session):
         print(f"Warnung: S3-Bild konnte nicht gelöscht werden: {e}")
 
 
-def _process_and_upload_image(contents: bytes) -> str:
+def _process_and_upload_image(contents: bytes, folder: str = "profile_picture") -> str:
     """Der BLOCKIERENDE Teil: Pillow-Verarbeitung (CPU) + S3-Upload (sync I/O).
     Läuft im Threadpool (siehe run_in_threadpool unten), damit der Event-Loop
     NICHT einfriert, während ein Bild verarbeitet/hochgeladen wird.
@@ -78,7 +79,7 @@ def _process_and_upload_image(contents: bytes) -> str:
     buffer.seek(0)
 
     # Upload zu Supabase
-    file_name = f"profile_picture/{uuid.uuid4().hex}.jpg"
+    file_name = f"{folder}/{uuid.uuid4().hex}.jpg"
     s3_client.upload_fileobj(
         buffer,
         BUCKET_NAME,
@@ -92,7 +93,8 @@ def _process_and_upload_image(contents: bytes) -> str:
 
 @router.post("/upload")
 async def upload_user_image(
-    file: UploadFile = File(...), 
+    file: UploadFile = File(...),
+    db: Session = Depends(get_dp),
     current_user: int = Depends(oauth2.get_current_user)
 ):
     MAX_SIZE = 15 * 1024 * 1024
@@ -115,6 +117,16 @@ async def upload_user_image(
     except Exception as e:
         print(f"Fehler beim Upload: {e}")
         raise HTTPException(status_code=500, detail="Bildverarbeitung fehlgeschlagen.")
+
+    # 4. URL direkt speichern (profile_picture_url ist nicht mehr per PUT setzbar),
+    # danach das alte Bild aus S3 entfernen.
+    old_url = current_user.profile_picture_url
+    db.query(models.User).filter(models.User.id == current_user.id).update(
+        {"profile_picture_url": url}, synchronize_session=False,
+    )
+    db.commit()
+
+    delete_s3_object(old_url, db)
 
     return {"image_url": url}
     
@@ -254,6 +266,11 @@ def upgrade_user(user_details: schemas.UserDetails,current_user: int = Depends(o
 
     update_data = user_details.dict(exclude_unset=True)
 
+    # Leerer Body (z.B. alter Flutter-Aufruf nur mit profile_picture_url, das Feld
+    # wird inzwischen ignoriert) -> nichts zu tun. Ohne diesen Check: "UPDATE users SET  WHERE" -> 500.
+    if not update_data:
+        return {"status": "success", "updated_fields": []}
+
     if update_data.get("location_id") is not None:
         location_exists = db.query(models.Location).filter(models.Location.id == update_data["location_id"]).first()
         if not location_exists:
@@ -279,6 +296,19 @@ def delete_account(current_user = Depends(oauth2.get_current_user),
 
     # 2. Profilbild löschen
     delete_s3_object(current_user.profile_picture_url, db)
+
+    # 2b. Story-Bilder + Bilder der selbst erstellten Gruppen löschen.
+    # CASCADE räumt nur die Zeilen weg, danach findet kein Cleanup die Dateien mehr.
+    stories = db.query(models.Story.image_url).filter(models.Story.owner_id == current_user.id).all()
+    for story in stories:
+        delete_story_image(story.image_url, db)
+
+    groups = db.query(models.GroupChats.profile_picture).filter(
+        models.GroupChats.creator_id == current_user.id,
+        models.GroupChats.profile_picture.isnot(None),
+    ).all()
+    for group in groups:
+        delete_s3_object(group.profile_picture, db)
 
     # 3. Denormalisierten Zaehler korrigieren, BEVOR CASCADE die Votes wegraeumt.
     # Die Votes dieses Users liegen groesstenteils auf FREMDEN Posts — die

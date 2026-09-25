@@ -46,7 +46,8 @@ class UserCreate(BaseModel):
 class UserDetails(BaseModel):
     vibe_factor_1: Optional[str] = None
     vibe_factor_2: Optional[str] = None
-    profile_picture_url: Optional[str] = None
+    # profile_picture_url bewusst NICHT hier: nur über POST /users/upload setzbar,
+    # damit nur eigene Supabase-URLs in der DB landen und das alte Bild gelöscht wird.
     biography: Optional[str] = None
     ranking_enabled: Optional[bool] = None
     location_id: Optional[int] = None
@@ -376,8 +377,9 @@ class ChatAck(BaseModel):
 
 
 class GroupChatUpdate(BaseModel):
+    # profile_picture bewusst NICHT hier: Bilder nur über POST /group_chat/{id}/picture,
+    # damit nur eigene Supabase-URLs in der DB landen und das alte Bild gelöscht wird.
     group_name: Optional[str] = None
-    profile_picture: Optional[str] = None
 
 
 class GroupChatInformationOut(BaseModel):

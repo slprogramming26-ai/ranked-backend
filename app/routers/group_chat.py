@@ -1,4 +1,5 @@
-from fastapi import APIRouter, Depends, status, HTTPException, Response, Header
+from fastapi import APIRouter, Depends, status, HTTPException, Response, Header, UploadFile, File
+from fastapi.concurrency import run_in_threadpool
 from fastapi.security.oauth2 import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from typing import List, Optional
@@ -7,6 +8,7 @@ from ..database import get_dp
 from datetime import timedelta, timezone, datetime
 import secrets
 from ..config import settings
+from .user import _process_and_upload_image, delete_s3_object
 
 def generate_unique_join_code(db: Session) -> int:
     for _ in range(5):
@@ -275,9 +277,13 @@ def delete_group_chat(
     if group.creator_id != current_user.id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="only the creator can delete this group")
 
-    
+
+    # URL VOR dem Löschen merken: nach commit ist group expired und die Zeile weg.
+    picture_url = group.profile_picture
     db.delete(group)
     db.commit()
+
+    delete_s3_object(picture_url, db)
     return {"message": "deleted"}
 
 @router.patch("/group_chat/{group_chat_id}", status_code=status.HTTP_200_OK)
@@ -320,6 +326,53 @@ def update_group_chat(
     db.refresh(group)
 
     return {"message": "Group updated successfully", "group": schemas.GroupChatOut.model_validate(group)}
+
+
+@router.post("/group_chat/{group_chat_id}/picture", response_model=schemas.GroupChatInformationOut)
+async def upload_group_picture(
+    group_chat_id: int,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_dp),
+    current_user=Depends(oauth2.get_current_user),
+):
+    # 1. Gruppe + Berechtigung ZUERST prüfen -> kein Upload, der danach verwaist.
+    group = db.query(models.GroupChats).filter(
+        models.GroupChats.group_chat_id == group_chat_id,
+    ).first()
+    if not group:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"group chat {group_chat_id} not found")
+
+    if group.creator_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="only the creator can change the group picture")
+
+    # 2. Dateigröße prüfen (max 15MB)
+    MAX_SIZE = 15 * 1024 * 1024
+    contents = await file.read(MAX_SIZE + 1)
+    if len(contents) > MAX_SIZE:
+        raise HTTPException(status_code=400, detail="Datei zu groß! Max 15MB.")
+
+    # 3. Content-Type prüfen
+    if not file.content_type or not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Nur Bilder erlaubt!")
+
+    # 4. Den schweren Teil im Threadpool ausführen -> Event-Loop bleibt frei.
+    try:
+        url = await run_in_threadpool(_process_and_upload_image, contents, "group_picture")
+    except HTTPException:
+        raise  # echte Validierungsfehler (z.B. zu viele Pixel) durchlassen
+    except Exception as e:
+        print(f"Fehler beim Gruppenbild-Upload: {e}")
+        raise HTTPException(status_code=500, detail="Bildverarbeitung fehlgeschlagen.")
+
+    # 5. Neue URL speichern, danach das alte Bild aus S3 entfernen.
+    old_url = group.profile_picture
+    group.profile_picture = url
+    db.commit()
+    db.refresh(group)
+
+    delete_s3_object(old_url, db)
+
+    return group
 
 
 
