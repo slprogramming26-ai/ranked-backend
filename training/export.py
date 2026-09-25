@@ -5,7 +5,9 @@ soll aber kein torch brauchen. ONNX ist das neutrale Austauschformat
 dazwischen: Architektur + Gewichte in einer Datei, die ohne PyTorch laeuft.
 """
 
+import json
 from pathlib import Path
+
 
 import onnxruntime as ort
 import torch
@@ -15,10 +17,14 @@ from app.lytir.features import FEATURE_VERSION, N_FEATURES
 from training.dataset import build_dataset, load_rows_from_file
 from training.model import LytirNet
 from training.train import DATEN, MODELL
+from app.lytir.ranker import _logit
+
 
 
 # training/data/lytir.pt -> training/data/lytir.onnx
 ONNX_DATEI = MODELL.with_suffix(".onnx")
+# training/data/lytir.pt -> training/data/lytir.json
+JSON_DATEI = MODELL.with_suffix(".json")
 
 
 
@@ -89,6 +95,50 @@ def check_onnx(pfad: Path, model: LytirNet, X: torch.Tensor) -> None:
     if abweichung > TOLERANZ:
         raise ValueError(f"ONNX weicht von PyTorch ab: {abweichung}")
 
+def check_json(pfad: Path, model: LytirNet, X: torch.Tensor) -> None:
+    """Rechnet ranker.py mit der JSON-Datei dasselbe wie PyTorch?"""
+    daten = json.loads(pfad.read_text(encoding="utf-8"))
+    schichten = [(s["W"], s["b"]) for s in daten["schichten"]]
+
+    with torch.inference_mode():
+        erwartet = model(X).tolist()
+
+    # X.tolist() macht aus dem Tensor (828, 17) eine Liste von 828 Listen —
+    # genau die Form, die der Ranker im Feed auch bekommt.
+    ergebnis = [_logit(schichten, x) for x in X.tolist()]
+
+    abweichung = max(abs(e - r) for e, r in zip(erwartet, ergebnis))
+    print(f"  {len(X)} Zeilen, groesste Abweichung: {abweichung:.2e}")
+
+    if abweichung > TOLERANZ:
+        raise ValueError(f"JSON-Ranker weicht von PyTorch ab: {abweichung}")
+
+
+
+
+
+
+def export_json(model: LytirNet, pfad: Path, checkpoint: dict) -> None:
+    """LytirNet -> nackte Zahlen als JSON, damit ranker.py ohne torch rechnen kann."""
+    schichten = []
+    for modul in model.net:
+        # model.net enthaelt Linear, ReLU, Linear, ReLU, Linear.
+        # Nur die Linear-Schichten haben Zahlen, ReLU ist reine Rechenregel.
+        if isinstance(modul, nn.Linear):
+            schichten.append({
+                "W": modul.weight.tolist(),   # Form (aus, ein): eine Zeile pro Neuron
+                "b": modul.bias.tolist(),     # Form (aus,)
+            })
+
+    daten = {
+        "feature_version": FEATURE_VERSION,
+        "epoche": checkpoint["epoche"],
+        "val_loss": checkpoint["val_loss"],
+        "schichten": schichten,
+    }
+    pfad.write_text(json.dumps(daten), encoding="utf-8")
+
+
 
 
 if __name__ == "__main__":
@@ -112,4 +162,15 @@ if __name__ == "__main__":
 
     check_onnx(ONNX_DATEI, model, ds.X_val)
     print()
+
+    export_json(model, JSON_DATEI, checkpoint)
+    print(f"  exportiert: {JSON_DATEI} ({JSON_DATEI.stat().st_size} Bytes)")
+    print()
+
+    check_json(JSON_DATEI, model, ds.X_val)
+    print()
+
+
+
+
 

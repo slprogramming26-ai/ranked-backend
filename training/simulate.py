@@ -15,25 +15,15 @@ unbrauchbar. Deshalb JSONL-Datei unter training/data/.
 """
 
 import random
-
-from app.lytir.features import FLAGS, FeatureInput
-
 from math import exp, log1p
-
 from typing import NamedTuple
-
 from training.labels import expected_read_seconds
-
 import uuid
 from dataclasses import asdict
-from datetime import datetime, timedelta
 from typing import Dict, List, NamedTuple
-
-
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-
 from app.lytir.features import FEATURE_NAMES, FLAGS, FeatureInput, build_features
 from training.labels import compute_label, expected_read_seconds
 

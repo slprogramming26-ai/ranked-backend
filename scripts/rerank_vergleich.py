@@ -15,6 +15,17 @@ bei jedem Aufruf neu im Modul `feed` nachschlaegt.
   V3  Cache: nach Seite 1 steht die KOMPLETTE Reihenfolge in Redis, mit TTL
   V4  Suche umgeht Rerank UND Cache
   V5  Lokal-Feed (mit dem ersten User, der einen Ort hat)
+  V6  Cache-Treffer: Seite 2 aus der gemerkten Reihenfolge, 1 Anweisung,
+      und der TTL wird dabei NICHT verlaengert
+  V7  Fenstergrenze: mit FEED_CANDIDATE_LIMIT = 5 muss nachgeladen werden
+  V8  Eine ID im Cache, zu der es keinen Post (mehr) gibt, faellt raus
+  V9  Redis kaputt: der Feed liefert trotzdem die richtigen Seiten
+  V10 Echtes Modell (Lytir 6b): ranker.GEWICHTE zeigt NUR in diesem Prozess
+      auf training/data/lytir.json. Dieselben Posts, nach Score sortiert,
+      weiterhin 1 Anweisung, plus Zeitmessung fuer 150 Kandidaten
+
+V1-V9 setzen voraus, dass KEIN Modell geladen ist (app/lytir/lytir.json
+fehlt) — nur dann ist der Rerank-Weg mit dem alten Weg vergleichbar.
 
 Schreibt nur die eigenen Cache-Keys in Redis und loescht sie am Ende wieder.
 Die DB wird nur gelesen.
@@ -23,6 +34,7 @@ Aufruf:  .\\venv\\Scripts\\python.exe scripts\\rerank_vergleich.py
 """
 import json
 import sys
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -33,6 +45,7 @@ from sqlalchemy import event  # noqa: E402
 
 from app import feed, models  # noqa: E402
 from app.database import SessionLocal, engine  # noqa: E402
+from app.lytir import ranker  # noqa: E402
 from app.ranking_config import FEED_CANDIDATE_LIMIT, FEED_ORDER_CACHE_TTL  # noqa: E402
 from app.redis_client import redis_client  # noqa: E402
 from app.routers.post import get_posts  # noqa: E402
@@ -40,6 +53,13 @@ from app.routers.post import get_posts  # noqa: E402
 if not hasattr(feed, "LYTIR_RERANK_ENABLED"):
     print("feed.py kennt LYTIR_RERANK_ENABLED noch nicht — erst 5c eintippen.")
     sys.exit(1)
+
+if ranker._modell_laden() is not None:
+    print(f"{ranker.GEWICHTE} existiert — V1-V9 brauchen den Zustand OHNE Modell.")
+    print("Datei kurz wegschieben (V10 benutzt ohnehin training/data/lytir.json).")
+    sys.exit(1)
+
+SIM_GEWICHTE = ROOT / "training" / "data" / "lytir.json"
 
 # Der Wert, der im Code steht. Nach jedem Abruf wird darauf zurueckgesetzt.
 SCHALTER_IM_CODE = feed.LYTIR_RERANK_ENABLED
@@ -178,6 +198,153 @@ else:
         pruefen(f"local limit={limit} skip={skip}", alt == neu, detail)
 
 # ---------------------------------------------------------------------------
+print("\nV6) Cache-Treffer: Seite 2 kommt aus der gemerkten Reihenfolge")
+if not redis_da:
+    print("  UEBERSPRUNGEN  Redis nicht erreichbar")
+else:
+    redis_client.delete(key)
+
+    # Seite 1, kalter Cache: holt das Fenster UND hat die Posts damit schon.
+    kalt, n_kalt = abruf(db, user, rerank=True, limit=5, skip=0)
+    pruefen("Seite 1 kalt: 1 Anweisung", n_kalt == 1, f"{n_kalt} gezaehlt")
+
+    # Kuenstlich runtersetzen: wird der TTL neu gesetzt, steht gleich wieder 300.
+    redis_client.expire(key, 100)
+
+    # Seite 2, warmer Cache: nur noch WHERE id IN (...).
+    alt2, _ = abruf(db, user, rerank=False, limit=5, skip=5)
+    warm, n_warm = abruf(db, user, rerank=True, limit=5, skip=5)
+    pruefen("Seite 2 warm == alter Weg", alt2 == warm,
+            f"{len(alt2)} Posts" if alt2 == warm else f"alt {ids(alt2)} / neu {ids(warm)}")
+    pruefen("Seite 2 warm: 1 Anweisung", n_warm == 1, f"{n_warm} gezaehlt")
+
+    ttl = redis_client.ttl(key)
+    pruefen("TTL nicht verlaengert (Reihenfolge friert nicht ein)",
+            0 < ttl <= 100, f"ttl={ttl}, erwartet <= 100")
+
+# ---------------------------------------------------------------------------
+print("\nV7) Fenstergrenze: FEED_CANDIDATE_LIMIT = 5, nur in diesem Prozess")
+if not redis_da:
+    print("  UEBERSPRUNGEN  Redis nicht erreichbar")
+elif len(alle_alt) < 6:
+    print(f"  UEBERSPRUNGEN  nur {len(alle_alt)} Posts — zu wenig fuer mehrere Fenster")
+else:
+    limit_im_code = feed.FEED_CANDIDATE_LIMIT
+    feed.FEED_CANDIDATE_LIMIT = 5
+    try:
+        redis_client.delete(key)
+        gleich = True
+        for skip in range(0, len(alle_alt) + 3, 3):
+            alt, _ = abruf(db, user, rerank=False, limit=3, skip=skip)
+            neu, _ = abruf(db, user, rerank=True, limit=3, skip=skip)
+            if alt != neu:
+                gleich = False
+                print(f"         skip={skip}: alt {ids(alt)} / neu {ids(neu)}")
+        pruefen("jede Seite gleich, obwohl in 5er-Fenstern nachgeladen", gleich)
+
+        gemerkt = json.loads(redis_client.get(key) or "[]")
+        pruefen("Cache haelt am Ende die komplette Reihenfolge",
+                gemerkt == ids(alle_alt),
+                f"{len(gemerkt)} IDs gemerkt, {len(alle_alt)} erwartet")
+        pruefen("keine Dubletten ueber Fenstergrenzen hinweg",
+                len(set(gemerkt)) == len(gemerkt))
+    finally:
+        feed.FEED_CANDIDATE_LIMIT = limit_im_code
+
+# ---------------------------------------------------------------------------
+print("\nV8) Tote ID im Cache (Post geloescht oder gemeldet)")
+if not redis_da:
+    print("  UEBERSPRUNGEN  Redis nicht erreichbar")
+else:
+    echte = ids(alle_alt)
+    tote_id = max(echte) + 999999
+    redis_client.set(key, json.dumps([tote_id] + echte), ex=FEED_ORDER_CACHE_TTL)
+
+    seite, n = abruf(db, user, rerank=True, limit=3, skip=0)
+    pruefen("tote ID faellt raus, Rest stimmt", ids(seite) == echte[:2],
+            f"bekommen {ids(seite)}, erwartet {echte[:2]}")
+    pruefen("Seite ist dann kuerzer als limit — kein Absturz", len(seite) == 2,
+            f"{len(seite)} statt 3")
+
+# ---------------------------------------------------------------------------
+print("\nV9) Redis kaputt: Feed laeuft weiter")
+
+
+class _KaputtesRedis:
+    """Tut so, als waere Redis nicht erreichbar — beide Richtungen."""
+
+    def get(self, *a, **k):
+        raise redis.RedisError("Testausfall")
+
+    def set(self, *a, **k):
+        raise redis.RedisError("Testausfall")
+
+
+echtes_redis = feed.redis_client
+feed.redis_client = _KaputtesRedis()
+try:
+    print("  (die zwei Warnzeilen unten gehoeren dazu)")
+    alt, _ = abruf(db, user, rerank=False, limit=5, skip=0)
+    ohne, n = abruf(db, user, rerank=True, limit=5, skip=0)
+    pruefen("Seite stimmt trotzdem", alt == ohne,
+            f"{len(alt)} Posts" if alt == ohne else f"alt {ids(alt)} / neu {ids(ohne)}")
+    pruefen("ohne Cache: 1 Anweisung (rechnet jedes Mal neu)", n == 1, f"{n} gezaehlt")
+finally:
+    feed.redis_client = echtes_redis
+
+# ---------------------------------------------------------------------------
+print("\nV10) Echtes Modell (Sim-Gewichte, nur in diesem Prozess)")
+if not SIM_GEWICHTE.exists():
+    print(f"  UEBERSPRUNGEN  {SIM_GEWICHTE} fehlt — erst python -m training.export")
+else:
+    gewichte_im_code = ranker.GEWICHTE
+    ranker.GEWICHTE = SIM_GEWICHTE
+    ranker._modell_laden.cache_clear()   # sonst bliebe das gemerkte None haengen
+    try:
+        pruefen("Modell geladen", ranker._modell_laden() is not None, str(SIM_GEWICHTE))
+
+        # Alte Reihenfolge aus V8 (mit toter ID) darf hier nicht mitspielen.
+        if redis_da:
+            redis_client.delete(key)
+
+        neu, n = abruf(db, user, rerank=True, limit=len(alle_alt), skip=0)
+        pruefen("dieselben Posts wie der alte Weg", sorted(ids(neu)) == sorted(ids(alle_alt)),
+                f"{len(neu)} Posts")
+        pruefen("weiterhin 1 SQL-Anweisung", n == 1, f"{n} gezaehlt")
+
+        # Gegenprobe: die Kandidaten selbst scoren und sortieren. Das now() weicht
+        # um Millisekunden von dem im Abruf ab — fuer die Reihenfolge egal.
+        zeilen = feed._kandidaten_holen(db, user, limit=FEED_CANDIDATE_LIMIT, offset=0,
+                                        search="", local=False)
+        scores = feed._lytir_scores(zeilen, user)
+        erwartet = [z[0].id for s, z in sorted(zip(scores, zeilen),
+                                               key=lambda p: p[0], reverse=True)]
+        pruefen("Reihenfolge = absteigender Lytir-Score", ids(neu) == erwartet,
+                "" if ids(neu) == erwartet else f"bekommen {ids(neu)} / erwartet {erwartet}")
+
+        geaendert = ids(neu) != ids(alle_alt)
+        print(f"  INFO    Reihenfolge gegenueber SQL {'geaendert' if geaendert else 'GLEICH'}")
+        print(f"          SQL:   {ids(alle_alt)}")
+        print(f"          Lytir: {ids(neu)}")
+
+        # Zeit fuer 150 Kandidaten: die vorhandenen Zeilen so oft wiederholen,
+        # bis 150 zusammen sind — gemessen wird build_features + Netz.
+        if zeilen:
+            voll = (zeilen * (FEED_CANDIDATE_LIMIT // len(zeilen) + 1))[:FEED_CANDIDATE_LIMIT]
+            feed._lytir_scores(voll, user)   # aufwaermen
+            laeufe = []
+            for _ in range(20):
+                t = time.perf_counter()
+                feed._lytir_scores(voll, user)
+                laeufe.append((time.perf_counter() - t) * 1000)
+            laeufe.sort()
+            print(f"  INFO    _lytir_scores fuer {len(voll)} Kandidaten: "
+                  f"median {laeufe[10]:.1f} ms, max {laeufe[-1]:.1f} ms")
+    finally:
+        ranker.GEWICHTE = gewichte_im_code
+        ranker._modell_laden.cache_clear()
+
+# ---------------------------------------------------------------------------
 if redis_da:
     for k in benutzte_keys:
         redis_client.delete(k)
@@ -193,4 +360,4 @@ if SCHALTER_IM_CODE:
 if fehler:
     print(f"{len(fehler)} FEHLER: {fehler}")
     sys.exit(1)
-print("Alles gruen: der Rerank-Weg liefert mit Platzhalter exakt den alten Feed.")
+print("Alles gruen: ohne Modell exakt der alte Feed, mit Modell nach Score sortiert.")

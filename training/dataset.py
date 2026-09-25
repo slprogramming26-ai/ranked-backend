@@ -227,9 +227,10 @@ def _tensor_x(X: List[List[float]]) -> torch.Tensor:
 
     Das reshape ist fuer den leeren Fall da: torch.tensor([]) hat die Form
     (0,), nicht (0, 17). Ohne reshape wuerde jeder spaetere Zugriff auf die
-    zweite Dimension knallen — und genau das ist bei uns gerade der
-    Normalfall, weil das Validierungsset leer ist.
+    zweite Dimension knallen — etwa wenn eine Quelle so wenige Zeilen hat,
+    dass eine Haelfte des Splits leer bleibt.
     """
+
     return torch.tensor(X, dtype=torch.float32).reshape(-1, N_FEATURES)
 
 
