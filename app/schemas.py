@@ -426,6 +426,25 @@ class PublicKeyOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class KeyBackupUpload(BaseModel):
+    """Das verschlüsselte Schlüssel-Backup, das der Client hochlädt. Für den Server
+    sind das undurchsichtige Blobs: er prüft nur Form und Länge, nie den Inhalt."""
+    secret_type: Literal["login_password", "custom"]
+    salt: str = Field(min_length=1, max_length=64)
+    nonce: str = Field(min_length=1, max_length=64)
+    ciphertext: str = Field(min_length=1, max_length=256)
+    opslimit: int = Field(gt=0)
+    memlimit: int = Field(gt=0, le=2_147_483_647)
+
+
+class KeyBackupOut(KeyBackupUpload):
+    """Was der Eigentümer zurückbekommt: dieselben Felder plus Zeitpunkt der letzten Änderung."""
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+
 # --- Gruppen-E2EE: Rekey / Schlüssel-Verteilung ---
 
 class GroupKeyCopy(BaseModel):

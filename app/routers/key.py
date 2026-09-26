@@ -1,10 +1,11 @@
-from fastapi import status, HTTPException, Depends, APIRouter
+from fastapi import status, HTTPException, Depends, APIRouter, Request, Response
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from typing import List
 from .. import models, schemas, oauth2
 from ..database import get_dp
+from ..limiter import limiter
 
 
 router = APIRouter(
@@ -35,6 +36,67 @@ def upload_my_public_key(
     db.commit()
     db.refresh(existing)
     return existing
+
+
+# --- Schlüssel-Backup ---
+# Die /backup-Routen MÜSSEN vor /{user_id} stehen: FastAPI prüft von oben nach
+# unten und würde "backup" sonst als user_id lesen -> 422.
+# Request-Bodies hier nie loggen (enthalten das verschlüsselte Schlüssel-Backup).
+
+@router.put("/backup", response_model=schemas.KeyBackupOut)
+def upload_my_key_backup(
+    payload: schemas.KeyBackupUpload,
+    db: Session = Depends(get_dp),
+    current_user: int = Depends(oauth2.get_current_user),
+):
+    # Gibt Backup? Dann überschreiben, sonst neu anlegen.
+    backup = db.query(models.KeyBackup).filter(
+        models.KeyBackup.user_id == current_user.id
+    ).first()
+
+    if backup:
+        for field, value in payload.model_dump().items():
+            setattr(backup, field, value)
+        backup.updated_at = func.now()
+    else:
+        backup = models.KeyBackup(user_id=current_user.id, **payload.model_dump())
+        db.add(backup)
+
+    db.commit()
+    db.refresh(backup)
+    return backup
+
+
+@router.get("/backup", response_model=schemas.KeyBackupOut)
+@limiter.limit("10/minute")
+def get_my_key_backup(
+    request: Request,
+    db: Session = Depends(get_dp),
+    current_user: int = Depends(oauth2.get_current_user),
+):
+    backup = db.query(models.KeyBackup).filter(
+        models.KeyBackup.user_id == current_user.id
+    ).first()
+
+    if not backup:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Kein Schlüssel-Backup vorhanden.",
+        )
+
+    return backup
+
+
+@router.delete("/backup", status_code=status.HTTP_204_NO_CONTENT)
+def delete_my_key_backup(
+    db: Session = Depends(get_dp),
+    current_user: int = Depends(oauth2.get_current_user),
+):
+    db.query(models.KeyBackup).filter(
+        models.KeyBackup.user_id == current_user.id
+    ).delete(synchronize_session=False)
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/{user_id}", response_model=schemas.PublicKeyOut)

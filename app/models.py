@@ -1,5 +1,5 @@
 from .database import Base
-from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, UniqueConstraint, ForeignKeyConstraint, Index
+from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, UniqueConstraint, ForeignKeyConstraint, Index, CheckConstraint
 from sqlalchemy.sql.sqltypes import TIMESTAMP, DATE
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.sql.expression import null, text
@@ -286,6 +286,29 @@ class UserKey(Base):
     updated_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text('now()'))
 
 
+class KeyBackup(Base):
+    __tablename__ = 'key_backups'
+
+    # Eine Zeile pro User: sein privater Schlüssel, vom Client mit einem Passwort
+    # verschlüsselt. Der Server sieht nie Klartext-Key oder Passwort, macht keine Krypto.
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    # Womit das Backup geschützt ist: 'login_password' oder 'custom'
+    secret_type = Column(String, nullable=False)
+    salt = Column(String, nullable=False)
+    nonce = Column(String, nullable=False)
+    ciphertext = Column(String, nullable=False)
+    # Argon2-Parameter, vom Client gewählt. Sie werden mitgespeichert, damit alte
+    # Backups lesbar bleiben, wenn wir die Werte später erhöhen.
+    opslimit = Column(Integer, nullable=False)
+    memlimit = Column(Integer, nullable=False)
+    updated_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text('now()'))
+
+    __table_args__ = (
+        CheckConstraint("secret_type IN ('login_password', 'custom')", name="ck_key_backups_secret_type"),
+    )
+
+
+
 class GroupChatKey(Base):
     __tablename__ = 'group_chat_keys'
 
@@ -314,6 +337,8 @@ class GroupChatKey(Base):
             ondelete='CASCADE',
         ),
     )
+
+
 
 
 class RefreshToken(Base):
@@ -403,6 +428,8 @@ class FeedImpression(Base):
             unique=True,
         ),
     )
+
+
 
 
 
