@@ -33,7 +33,8 @@ s3_client = boto3.client(
 )
 
 def delete_s3_object(image_url: str | None, db: Session):
-    """Löscht eine Datei aus S3 anhand ihrer öffentlichen URL. Schluckt Fehler bewusst."""
+    """Löscht eine Datei aus S3 anhand ihrer öffentlichen URL. Schluckt Fehler bewusst.
+    Bewusst KEIN commit: der Aufrufer committet (sonst bricht es dessen Transaktion auf)."""
     if not image_url:
         return
     marker = f"/public/{BUCKET_NAME}/"
@@ -46,7 +47,6 @@ def delete_s3_object(image_url: str | None, db: Session):
     except Exception as e:
         failed_image_deletion = models.FailedImageDeletions(bucket = BUCKET_NAME, s3_key = s3_key)
         db.add(failed_image_deletion)
-        db.commit()
         print(f"Warnung: S3-Bild konnte nicht gelöscht werden: {e}")
 
 
@@ -262,5 +262,6 @@ def update_post(id: int,updated_post: schemas.PostCreate, db: Session = Depends(
 
     if image_changed:
         delete_s3_object(old_image_url, db)
+        db.commit()  # speichert ggf. den FailedImageDeletions-Eintrag
 
     return post_query.first()

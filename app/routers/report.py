@@ -8,7 +8,7 @@ router = APIRouter(
 )
 
 
-def _create_report(db: Session, reporter_id: int, reported_user_id: int, reason: str,
+def _create_report(db: Session, reporter_id: int, reported_user_id: int, report: schemas.ReportCreate,
                    post_id: int = None, story_id: int = None, comment_id: int = None):
     """Gemeinsamer Teil aller Routen: Selbst-Report abfangen,
     Duplikat prüfen, Report anlegen."""
@@ -32,7 +32,7 @@ def _create_report(db: Session, reporter_id: int, reported_user_id: int, reason:
                             detail="you have already reported this")
 
     new_report = models.Report(reporter_id=reporter_id, reported_user_id=reported_user_id,
-                               reason=reason, post_id=post_id, story_id=story_id,
+                               reason=report.reason, details=report.details, post_id=post_id, story_id=story_id,
                                comment_id=comment_id)
     db.add(new_report)
     db.commit()
@@ -50,7 +50,7 @@ def report_post(id: int, report: schemas.ReportCreate, db: Session = Depends(dat
                             detail=f"post with id {id} does not exist")
 
     return _create_report(db, reporter_id=current_user.id, reported_user_id=post.owner_id,
-                          reason=report.reason, post_id=post.id)
+                          report=report, post_id=post.id)
 
 
 @router.post("/story/{id}", status_code=status.HTTP_201_CREATED)
@@ -63,7 +63,7 @@ def report_story(id: int, report: schemas.ReportCreate, db: Session = Depends(da
                             detail=f"story with id {id} does not exist")
 
     return _create_report(db, reporter_id=current_user.id, reported_user_id=story.owner_id,
-                          reason=report.reason, story_id=story.id)
+                          report=report, story_id=story.id)
 
 
 @router.post("/comment/{id}", status_code=status.HTTP_201_CREATED)
@@ -76,7 +76,7 @@ def report_comment(id: int, report: schemas.ReportCreate, db: Session = Depends(
                             detail=f"comment with id {id} does not exist")
 
     return _create_report(db, reporter_id=current_user.id, reported_user_id=comment.user_id,
-                          reason=report.reason, comment_id=comment.id)
+                          report=report, comment_id=comment.id)
 
 
 @router.post("/user/{id}", status_code=status.HTTP_201_CREATED)
@@ -89,5 +89,5 @@ def report_user(id: int, report: schemas.ReportCreate, db: Session = Depends(dat
                             detail=f"user with id {id} does not exist")
 
     return _create_report(db, reporter_id=current_user.id, reported_user_id=user.id,
-                          reason=report.reason)
+                          report=report)
 

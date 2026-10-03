@@ -1,5 +1,5 @@
 from .database import Base
-from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, UniqueConstraint, ForeignKeyConstraint, Index, CheckConstraint
+from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, UniqueConstraint, ForeignKeyConstraint, Index, CheckConstraint, Enum
 from sqlalchemy.sql.sqltypes import TIMESTAMP, DATE
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.sql.expression import null, text
@@ -54,7 +54,11 @@ class User(Base):
     last_swipe_date = Column(DATE, nullable=True)
     location_id = Column(Integer, ForeignKey("locations.id", ondelete="SET NULL"), nullable=True)
     location = relationship("Location")
-    
+    # für admin bereich relevant
+    role = Column(Enum("user", "moderator", "admin", name="user_roles"), nullable=False, server_default="user")
+    banned_until = Column(TIMESTAMP(timezone=True), nullable=True)
+    ban_reason = Column(String, nullable=True)
+
 
 class FailedImageDeletions(Base):
 
@@ -273,9 +277,57 @@ class Report(Base):
     post_id = Column(Integer, ForeignKey("posts.id", ondelete="CASCADE"), nullable=True)
     story_id = Column(Integer, ForeignKey("stories.id", ondelete="CASCADE"), nullable=True)
     comment_id = Column(Integer, ForeignKey("comments.id", ondelete="CASCADE"), nullable=True)
-    reason = Column(String, nullable=False) # z.B. "Spam", "Beleidigung", "Unangebracht"
+    # Feste Kategorie (Liste in schemas.ReportReason), damit die Moderation pro Ziel
+    # sauber zaehlen kann ("Spam: 10, Belaestigung: 3"). Freitext gehoert in details.
+    reason = Column(String, nullable=False)
+    details = Column(String, nullable=True)
     status = Column(String, nullable=False, server_default=text("'pending'")) # pending / dismissed / action_taken
     created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text('now()'))
+    # Wer hat erledigt und wann. SET NULL: wird der Moderator geloescht, bleibt die Meldung erhalten.
+    resolved_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    resolved_at = Column(TIMESTAMP(timezone=True), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint("reason IN ('spam', 'harassment', 'inappropriate', 'misinformation', 'other')",
+                        name="ck_reports_reason"),
+        CheckConstraint("status IN ('pending', 'dismissed', 'action_taken')", name="ck_reports_status"),
+    )
+
+
+class ModerationAction(Base):
+    """Audit-Log: jede Mod/Admin-Aktion schreibt eine Zeile, im SELBEN Commit wie
+    die Aktion selbst. Entweder passiert beides oder nichts."""
+
+    __tablename__ = 'moderation_actions'
+
+    id = Column(Integer, primary_key=True, nullable=False)
+    # SET NULL bei beiden: loescht Mod oder betroffener User seinen Account, bleibt
+    # die Zeile erhalten (Statistik), ist aber nicht mehr personenbezogen.
+    moderator_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    # index=True: "was lief alles gegen User X?" (User-Detail in Phase 6)
+    target_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    action = Column(String, nullable=False)
+    # Post/Kommentar/Story-ID. Bewusst KEIN FK: das Ziel wird ja oft geloescht,
+    # mit CASCADE verschwaende die Log-Zeile gleich mit.
+    target_id = Column(Integer, nullable=True)
+    reason = Column(String, nullable=True)
+    # Text-Kopie des geloeschten Inhalts als Beleg bei Einspruch. DELETE /cleanup/moderation_snapshots
+    # (taeglich) leert sie nach 6 Monaten oder sobald target_user_id NULL ist (Account geloescht).
+    content_snapshot = Column(String, nullable=True)
+    # Was je nach Aktion dazugehoert: {"days": 7}, {"old_role": ..., "new_role": ...}, {"reports": 12}
+    extra = Column(JSONB, nullable=True)
+    created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text('now()'))
+
+    # foreign_keys noetig: zwei FKs auf users, SQLAlchemy wuesste sonst nicht, welcher welcher ist.
+    moderator = relationship("User", foreign_keys=[moderator_id])
+    target_user = relationship("User", foreign_keys=[target_user_id])
+
+    __table_args__ = (
+        CheckConstraint(
+            "action IN ('ban', 'unban', 'resolve_reports', 'delete_post', 'delete_comment', "
+            "'delete_story', 'delete_profile_picture', 'role_change')",
+            name="ck_moderation_actions_action"),
+    )
 
 
 class UserKey(Base):

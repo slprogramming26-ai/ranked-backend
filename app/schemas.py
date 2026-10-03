@@ -179,12 +179,141 @@ class Follow(BaseModel):
 # Reports
 # =========================================================
 
+# Feste Kategorien (gleiche Liste wie ck_reports_reason in models.py). Die deutschen
+# Texte ("Spam", "Belaestigung oder Mobbing", ...) sind reine Anzeige im Frontend.
+ReportReason = Literal["spam", "harassment", "inappropriate", "misinformation", "other"]
+
+
 class ReportCreate(BaseModel):
-    """Was der Melder schickt: nur den Grund. WAS gemeldet wird, steht im URL-Pfad
-    (/report/post/{id} usw.), den Rest (Owner etc.) leitet der Server selbst ab."""
+    """Was der Melder schickt: Kategorie + optionaler Freitext. WAS gemeldet wird,
+    steht im URL-Pfad (/report/post/{id} usw.), den Rest (Owner etc.) leitet der
+    Server selbst ab."""
+    reason: ReportReason
+    details: Optional[str] = Field(default=None, min_length=1, max_length=500)
+
+    model_config = ConfigDict(extra="forbid")
+
+
+# =========================================================
+# Admin / Moderation
+# =========================================================
+
+class BanCreate(BaseModel):
+    """days fehlt/None = dauerhaft (nur Admin). Moderatoren haben eine
+    Obergrenze, die prueft admin.py — das Schema kennt die Rolle nicht."""
+    days: Optional[int] = Field(default=None, ge=1, le=3650)
     reason: str = Field(min_length=1, max_length=500)
 
     model_config = ConfigDict(extra="forbid")
+
+
+class BanOut(BaseModel):
+    user_id: int
+    banned_until: Optional[datetime] = None
+    ban_reason: Optional[str] = None
+
+
+ReportTargetType = Literal["post", "story", "comment", "user"]
+
+
+class ReportedUserOut(BaseModel):
+    id: int
+    username: str
+    role: str
+    profile_picture_url: Optional[str] = None
+    banned_until: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ReportPreview(BaseModel):
+    """Was der Moderator zu sehen bekommt. Je nach Ziel sind nur manche Felder
+    gesetzt: Post = title/content/image_url, Kommentar = content,
+    Story = image_url, User = content (Bio) + image_url (Profilbild)."""
+    title: Optional[str] = None
+    content: Optional[str] = None
+    image_url: Optional[str] = None
+
+
+class ReportQueueItem(BaseModel):
+    """EIN Eintrag pro gemeldetem Ziel, egal wie viele Meldungen dranhaengen."""
+    target_type: ReportTargetType
+    target_id: int
+    reported_user: ReportedUserOut
+    report_count: int
+    reasons: dict[str, int]  # {"spam": 10, "inappropriate": 3}
+    details: List[str]       # alle Freitexte der Melder
+    first_reported_at: datetime
+    last_reported_at: datetime
+    preview: Optional[ReportPreview] = None  # None = Inhalt inzwischen geloescht
+
+
+class ReportResolve(BaseModel):
+    target_type: ReportTargetType
+    target_id: int = Field(gt=0)
+    status: Literal["dismissed", "action_taken"]
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class ReportResolveOut(BaseModel):
+    resolved: int  # wie viele Meldungen erledigt wurden
+
+
+class ContentRemove(BaseModel):
+    """Body beim Entfernen von Inhalten durch Mods. Gleiche Kategorien wie beim
+    Melden -> das Audit-Log bleibt auswertbar ("wie viel wurde wegen Spam geloescht?")."""
+    reason: ReportReason
+    details: Optional[str] = Field(default=None, min_length=1, max_length=500)
+
+    model_config = ConfigDict(extra="forbid")
+
+
+ModerationActionType = Literal["ban", "unban", "resolve_reports", "delete_post", "delete_comment",
+                               "delete_story", "delete_profile_picture", "role_change"]
+
+
+class ModerationActionOut(BaseModel):
+    """Eine Zeile Audit-Log. moderator/target_user sind None, wenn der Account
+    inzwischen geloescht ist (SET NULL)."""
+    id: int
+    action: ModerationActionType
+    created_at: datetime
+    moderator: Optional[ReportedUserOut] = None
+    target_user: Optional[ReportedUserOut] = None
+    target_id: Optional[int] = None
+    reason: Optional[str] = None
+    content_snapshot: Optional[str] = None  # None = nie gesetzt oder schon geleert
+    extra: Optional[dict] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class RoleUpdate(BaseModel):
+    role: Literal["user", "moderator", "admin"]
+    reason: Optional[str] = Field(default=None, min_length=1, max_length=500)
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class RoleOut(BaseModel):
+    user_id: int
+    role: str
+
+
+class AdminUserDetail(BaseModel):
+    """Alles, was ein Mod fuer eine Entscheidung braucht, in einer Antwort."""
+    id: int
+    username: str
+    role: str
+    created_at: datetime
+    biography: Optional[str] = None
+    profile_picture_url: Optional[str] = None
+    banned_until: Optional[datetime] = None
+    ban_reason: Optional[str] = None
+    reports_pending: int   # offene Meldungen gegen den User (inkl. seiner Inhalte)
+    reports_total: int     # alle jemals, auch erledigte
+    recent_actions: List[ModerationActionOut]
 
 
 # =========================================================

@@ -284,6 +284,7 @@ def delete_group_chat(
     db.commit()
 
     delete_s3_object(picture_url, db)
+    db.commit()  # speichert ggf. den FailedImageDeletions-Eintrag
     return {"message": "deleted"}
 
 @router.patch("/group_chat/{group_chat_id}", status_code=status.HTTP_200_OK)
@@ -371,6 +372,7 @@ async def upload_group_picture(
     db.refresh(group)
 
     delete_s3_object(old_url, db)
+    db.commit()  # speichert ggf. den FailedImageDeletions-Eintrag
 
     return group
 

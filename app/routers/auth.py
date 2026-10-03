@@ -26,7 +26,11 @@ def login(request: Request, user_credentials: OAuth2PasswordRequestForm = Depend
             status_code=status.HTTP_401_UNAUTHORIZED, 
             detail="invalid credentials"
         )
-    
+
+    # Erst NACH der Passwort-Pruefung: sonst verraet die Sperr-Meldung jedem,
+    # dass es zu dieser E-Mail einen (gesperrten) Account gibt.
+    oauth2.check_not_banned(user)
+
     access_token = oauth2.create_access_token(data={"user_id": str(user.id)})
 
     # Langlebiger Refresh Token 

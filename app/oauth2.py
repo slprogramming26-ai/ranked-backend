@@ -2,11 +2,12 @@ import secrets
 import hashlib
 from jose import JWTError, jwt
 from . import schemas, database, models
-from datetime import datetime, timedelta
 from fastapi import Depends, status, HTTPException
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 from .config import settings
+from datetime import datetime, timedelta, timezone
+
 
 oauth_scheme = OAuth2PasswordBearer(tokenUrl="login")
 
@@ -18,7 +19,7 @@ REFRESH_TOKEN_EXPIRE_DAYS = settings.refresh_token_expire_days
 def create_access_token(data: dict):
     to_encode = data.copy()
 
-    expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     to_encode.update({"exp": expire})
 
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
@@ -58,7 +59,33 @@ def get_current_user(token: str = Depends(oauth_scheme), db: Session = Depends(d
     if user is None:
         raise credentials_exception
 
+    check_not_banned(user)
+
     return user
+
+
+def check_not_banned(user: models.User):
+    """Wirft 403, solange die Sperre laeuft. Wird von get_current_user UND /login
+    benutzt — sonst holt sich ein Gesperrter per Login einfach neue Tokens."""
+    if user.banned_until is not None and user.banned_until > datetime.now(timezone.utc):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"account suspended until {user.banned_until.isoformat()}"
+        )
+
+
+ROLE_RANK = {"user": 0, "moderator": 1, "admin": 2}
+
+
+def require_role(min_role: str):
+    def role_checker(current_user: models.User = Depends(get_current_user)):
+        if ROLE_RANK[current_user.role] < ROLE_RANK[min_role]:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                                detail="insufficient permissions")
+        return current_user
+
+    return role_checker
+
 
 
 def hash_token(token: str) -> str:

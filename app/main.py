@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from . import models
 from .database import engine
-from .routers import group_chat, post, user, auth, vote, comment,location, cleanup, ranking, follow, message, key, story, report, impression
+from .routers import group_chat, post, user, auth, vote, comment,location, cleanup, ranking, follow, message, key, story, report, impression, admin
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from .limiter import limiter          # <- der EINE Limiter aus limiter.py
@@ -35,6 +35,7 @@ app.include_router(report.router)
 app.include_router(location.router)
 app.include_router(cleanup.router)
 app.include_router(impression.router)
+app.include_router(admin.router)
 app.include_router(ws_internal.router)
 
 
