@@ -83,6 +83,9 @@ class GetUserOut(BaseModel):
     xp: Optional[int] = None
     streak_count: Optional[int] = None
     league: Optional[LeagueOut] = None
+    # Nur bei GET /users/ (eigenes Profil) gesetzt -> App blendet den Admin-Bereich ein.
+    # Fremde Profile/Suche lassen es None: wer Mod ist, geht andere nichts an.
+    role: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
 

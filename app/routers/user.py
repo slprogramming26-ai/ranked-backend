@@ -183,6 +183,7 @@ def get_current_user(current_user: int = Depends(oauth2.get_current_user),  db: 
             "xp": current_user.xp,
             "streak_count": get_effective_streak(current_user.streak_count, current_user.last_swipe_date),
             "league": get_league(current_user.xp),
+            "role": current_user.role,
             }
 
 @router.get("/search", response_model=List[schemas.GetUserOut])
