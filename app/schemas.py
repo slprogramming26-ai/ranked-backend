@@ -90,6 +90,14 @@ class GetUserOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class BlockedUserOut(BaseModel):
+    """Eintrag der Liste "Blockierte Konten" (GET /users/blocked)."""
+    id: int
+    username: str
+    profile_picture_url: Optional[str] = None
+    blocked_at: datetime
+
+
 class UserLogin(BaseModel):
     email: EmailStr
     passwort: str

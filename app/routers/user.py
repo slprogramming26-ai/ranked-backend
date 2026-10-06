@@ -219,6 +219,27 @@ def search_for_user(
       } for user in found_users]
 
 
+# Muss VOR "/{id}" stehen, sonst wird "blocked" als id gelesen (-> 422).
+@router.get("/blocked", response_model=List[schemas.BlockedUserOut])
+def get_blocked_users(current_user: int = Depends(oauth2.get_current_user), db: Session = Depends(get_dp)):
+
+    # Eine Anweisung: Block + User per Join, neueste Blockade zuerst
+    rows = (
+        db.query(models.User.id, models.User.username, models.User.profile_picture_url, models.Block.created_at)
+        .join(models.Block, models.Block.blocked_id == models.User.id)
+        .filter(models.Block.blocker_id == current_user.id)
+        .order_by(models.Block.created_at.desc())
+        .all()
+    )
+
+    return [{
+        "id": row.id,
+        "username": row.username,
+        "profile_picture_url": row.profile_picture_url,
+        "blocked_at": row.created_at,
+    } for row in rows]
+
+
 
 @router.get("/{id}", response_model=schemas.GetUserOut)
 def get_user(id: int, current_user: int = Depends(oauth2.get_current_user),  db: Session = Depends(get_dp)):
@@ -351,7 +372,8 @@ def block_user(id: int, current_user: int = Depends(oauth2.get_current_user), db
     ).first()
 
     if blocked_user:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="You already blocked that user")
+        # 409 statt 400: Frontend behandelt "schon blockiert" wie Erfolg (wie 409 beim Melden)
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="You already blocked that user")
     
     new_blocked_user = models.Block(blocker_id=current_user.id, blocked_id=id)
 
