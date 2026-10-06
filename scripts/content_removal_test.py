@@ -73,20 +73,29 @@ try:
     db.flush()
 
     db.add_all([
-        models.Report(reporter_id=b.id, reported_user_id=a.id, reason="spam", post_id=post.id),
-        models.Report(reporter_id=adm.id, reported_user_id=a.id, reason="spam", post_id=post.id),
-        models.Report(reporter_id=b.id, reported_user_id=a.id, reason="harassment", comment_id=comment.id),
-        models.Report(reporter_id=b.id, reported_user_id=a.id, reason="inappropriate"),  # User-Meldung
+        models.Report(reporter_id=b.id, reported_user_id=a.id, reason="spam", target_type="post", target_id=post.id),
+        models.Report(reporter_id=adm.id, reported_user_id=a.id, reason="spam", target_type="post", target_id=post.id),
+        models.Report(reporter_id=b.id, reported_user_id=a.id, reason="harassment",
+                      target_type="comment", target_id=comment.id),
+        models.Report(reporter_id=b.id, reported_user_id=a.id, reason="inappropriate",
+                      target_type="user"),  # User-Meldung
     ])
     db.flush()
     post_id, comment_id, story_id = post.id, comment.id, story.id
+    R = models.Report
+
+    def meldungen(ttype, tid):
+        return db.query(R).filter(R.target_type == ttype, R.target_id == tid).all()
 
     print("\n1) Post entfernen")
     remove_post(post_id, schemas.ContentRemove(reason="spam", details="Kryptowerbung"), db=db, current_user=mod)
     db.expire_all()
     check("Post weg", db.get(models.Post, post_id) is None)
-    check("Meldungen per CASCADE weg",
-          db.query(models.Report).filter(models.Report.post_id == post_id).count() == 0)
+    rs = meldungen("post", post_id)
+    check("Meldungen bleiben stehen (kein CASCADE mehr)", len(rs) == 2, len(rs))
+    check("  ... und sind action_taken durch mod", all(
+        r.status == "action_taken" and r.resolved_by == mod.id and r.resolved_at is not None for r in rs),
+        [r.status for r in rs])
     log = letzter_log("delete_post")
     check("Log: Ziel + Grund", log is not None and log.target_id == post_id
           and log.target_user_id == a.id and log.reason == "spam")
@@ -97,6 +106,8 @@ try:
     remove_comment(comment_id, schemas.ContentRemove(reason="harassment"), db=db, current_user=mod)
     db.expire_all()
     check("Kommentar weg", db.get(models.Comments, comment_id) is None)
+    rs = meldungen("comment", comment_id)
+    check("Kommentar-Meldung bleibt, action_taken", len(rs) == 1 and rs[0].status == "action_taken")
     log = letzter_log("delete_comment")
     check("Log: Snapshot = Kommentartext", log.content_snapshot == "Beleidigung")
     check("Log: extra ohne details", log.extra == {"reports": 1}, log.extra)
@@ -115,10 +126,8 @@ try:
     check("Profilbild-URL leer", db.get(models.User, a.id).profile_picture_url is None)
     log = letzter_log("delete_profile_picture")
     check("Log: target_id leer, 1 User-Meldung", log.target_id is None and log.extra == {"reports": 1}, log.extra)
-    offen = db.query(models.Report).filter(models.Report.reported_user_id == a.id,
-                                           models.Report.post_id.is_(None),
-                                           models.Report.comment_id.is_(None),
-                                           models.Report.status == "pending").count()
+    offen = db.query(R).filter(R.reported_user_id == a.id, R.target_type == "user",
+                               R.status == "pending").count()
     check("User-Meldung bleibt offen", offen == 1)
 
     print("\n5) Verbotenes")

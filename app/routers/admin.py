@@ -2,6 +2,7 @@ from datetime import datetime, timedelta, timezone
 from typing import List, Literal
 from fastapi import APIRouter, Depends, status, HTTPException, Query, Response
 from sqlalchemy import and_, func
+from sqlalchemy.dialects.postgresql import aggregate_order_by
 from sqlalchemy.orm import Session, joinedload
 from .. import schemas, database, models, oauth2
 # Jeder Router kennt nur seinen eigenen Bucket -> pro Inhaltstyp die passende Funktion.
@@ -65,16 +66,25 @@ def _log_action(db: Session, moderator: models.User, action: str, target_user_id
 
 def _prepare_removal(db: Session, current_user: models.User, action: str, owner_id: int,
                      target_id: int, remove: schemas.ContentRemove, report_filter,
-                     content_snapshot: str = None):
+                     content_snapshot: str = None, close_reports: bool = True):
     """Gemeinsamer Teil aller Loesch-Routen, VOR dem eigentlichen Loeschen aufrufen:
     1. Rangregel gegen den Besitzer (wirft 403/400 -> dann wurde noch nichts angefasst)
-    2. offene Meldungen zaehlen — nach dem Loeschen sind sie per CASCADE weg
+    2. offene Meldungen erledigen (action_taken) — oder nur zaehlen, wenn close_reports=False
     3. Log-Zeile anlegen (ohne commit, die Route committet alles zusammen)"""
 
     _get_target_below_me(db, owner_id, current_user)
 
-    open_reports = db.query(func.count()).select_from(models.Report).filter(
-        models.Report.status == "pending", report_filter).scalar()
+    R = models.Report
+    pending = db.query(R).filter(R.status == "pending", report_filter)
+    if close_reports:
+        # Meldungen haengen ohne FK am Inhalt -> sie bleiben nach dem Loeschen stehen
+        # und werden hier im selben Commit erledigt. update() liefert die Anzahl gleich mit.
+        open_reports = pending.update({R.status: "action_taken",
+                                       R.resolved_by: current_user.id,
+                                       R.resolved_at: func.now()},
+                                      synchronize_session=False)
+    else:
+        open_reports = pending.with_entities(func.count()).scalar()
 
     extra = {"reports": open_reports}
     if remove.details is not None:
@@ -143,30 +153,11 @@ def unban_user(id: int, db: Session = Depends(database.get_dp),
 # Meldungs-Warteschlange
 # =========================================================
 
-# Welche Spalte zeigt auf welches Ziel? Ein User-Report hat alle drei auf NULL
-# und wird nur ueber reported_user_id erkannt.
-TARGET_COLUMNS = {
-    "post": models.Report.post_id,
-    "story": models.Report.story_id,
-    "comment": models.Report.comment_id,
-}
-
-
 def _lower_roles(current_user: models.User) -> List[str]:
     """Alle Rollen UNTER meiner: Mod -> ["user"], Admin -> ["user", "moderator"].
     Gleiche Regel wie beim Sperren — und so sieht niemand Meldungen gegen sich selbst."""
     my_rank = oauth2.ROLE_RANK[current_user.role]
     return [role for role, rank in oauth2.ROLE_RANK.items() if rank < my_rank]
-
-
-def _target_of(post_id, story_id, comment_id, reported_user_id):
-    if post_id is not None:
-        return "post", post_id
-    if story_id is not None:
-        return "story", story_id
-    if comment_id is not None:
-        return "comment", comment_id
-    return "user", reported_user_id
 
 
 @router.get("/reports", response_model=List[schemas.ReportQueueItem])
@@ -181,25 +172,35 @@ def list_reports(report_status: Literal["pending", "dismissed", "action_taken"] 
     # Grund ("Post 5 / spam / 10", "Post 5 / inappropriate / 3"). Zu einem Eintrag
     # pro Ziel fassen wir unten in Python zusammen.
     rows = (
-        db.query(R.post_id, R.story_id, R.comment_id, R.reported_user_id, R.reason,
+        db.query(R.target_type, R.target_id, R.reported_user_id, R.reason,
                  func.count(),
                  func.min(R.created_at),
                  func.max(R.created_at),
-                 func.array_agg(R.details).filter(R.details.isnot(None)))
+                 func.array_agg(R.details).filter(R.details.isnot(None)),
+                 # Neuester Snapshot dieser Gruppe ([1] = erstes Element, Postgres zaehlt ab 1).
+                 # Wird nur gebraucht, wenn der Inhalt inzwischen geloescht ist.
+                 func.array_agg(aggregate_order_by(R.content_snapshot, R.created_at.desc()))
+                 .filter(R.content_snapshot.isnot(None))[1])
         .join(models.User, models.User.id == R.reported_user_id)
         .filter(R.status == report_status,
                 models.User.role.in_(_lower_roles(current_user)))
-        .group_by(R.post_id, R.story_id, R.comment_id, R.reported_user_id, R.reason)
+        .group_by(R.target_type, R.target_id, R.reported_user_id, R.reason)
         .all()
     )
 
     groups = {}
-    for post_id, story_id, comment_id, user_id, reason, count, first, last, details in rows:
-        key = _target_of(post_id, story_id, comment_id, user_id)
+    for target_type, target_id, user_id, reason, count, first, last, details, snapshot in rows:
+        # User-Meldungen haben kein target_id -> der User selbst ist das Ziel.
+        key = (target_type, user_id if target_type == "user" else target_id)
         group = groups.get(key)
         if group is None:
             group = groups[key] = {"user_id": user_id, "count": 0, "reasons": {},
-                                   "details": [], "first": first, "last": last}
+                                   "details": [], "first": first, "last": last,
+                                   "snapshot": None, "snapshot_at": None}
+        # Ueber alle Gruende hinweg den neuesten Snapshot behalten.
+        if snapshot is not None and (group["snapshot_at"] is None or last > group["snapshot_at"]):
+            group["snapshot"] = snapshot
+            group["snapshot_at"] = last
         group["count"] += count
         group["reasons"][reason] = count
         group["details"] += details or []  # array_agg mit FILTER liefert NULL statt []
@@ -229,6 +230,7 @@ def list_reports(report_status: Literal["pending", "dismissed", "action_taken"] 
         reported_user = users[group["user_id"]]
 
         preview = None
+        content_deleted = False
         if target_type == "post" and target_id in posts:
             post = posts[target_id]
             preview = {"title": post.title, "content": post.content, "image_url": post.image_url}
@@ -238,6 +240,11 @@ def list_reports(report_status: Literal["pending", "dismissed", "action_taken"] 
             preview = {"content": comments[target_id].comment}
         elif target_type == "user":
             preview = {"content": reported_user.biography, "image_url": reported_user.profile_picture_url}
+        else:
+            # Inhalt geloescht -> Text-Kopie vom Melden zeigen (Story hat keine -> None).
+            content_deleted = True
+            if group["snapshot"] is not None:
+                preview = {"content": group["snapshot"]}
 
         items.append({
             "target_type": target_type,
@@ -249,6 +256,7 @@ def list_reports(report_status: Literal["pending", "dismissed", "action_taken"] 
             "first_reported_at": group["first"],
             "last_reported_at": group["last"],
             "preview": preview,
+            "content_deleted": content_deleted,
         })
 
     return items
@@ -263,10 +271,9 @@ def resolve_reports(resolve: schemas.ReportResolve, db: Session = Depends(databa
     R = models.Report
     query = db.query(R).filter(R.status == "pending")
     if resolve.target_type == "user":
-        query = query.filter(R.reported_user_id == resolve.target_id,
-                             R.post_id.is_(None), R.story_id.is_(None), R.comment_id.is_(None))
+        query = query.filter(R.target_type == "user", R.reported_user_id == resolve.target_id)
     else:
-        query = query.filter(TARGET_COLUMNS[resolve.target_type] == resolve.target_id)
+        query = query.filter(R.target_type == resolve.target_type, R.target_id == resolve.target_id)
 
     first_report = query.first()
     if first_report is None:
@@ -308,11 +315,11 @@ def remove_post(id: int, remove: schemas.ContentRemove, db: Session = Depends(da
                             detail=f"post with id {id} does not exist")
 
     _prepare_removal(db, current_user, "delete_post", post.owner_id, post.id, remove,
-                     models.Report.post_id == post.id,
+                     and_(models.Report.target_type == "post", models.Report.target_id == post.id),
                      content_snapshot=f"{post.title}\n\n{post.content}")
 
     delete_post_image(post.image_url, db)
-    db.delete(post)  # CASCADE: Votes, Kommentare, Meldungen zum Post
+    db.delete(post)  # CASCADE: Votes, Kommentare. Meldungen bleiben (kein FK), siehe oben
     db.commit()
 
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -328,7 +335,7 @@ def remove_comment(id: int, remove: schemas.ContentRemove, db: Session = Depends
                             detail=f"comment with id {id} does not exist")
 
     _prepare_removal(db, current_user, "delete_comment", comment.user_id, comment.id, remove,
-                     models.Report.comment_id == comment.id,
+                     and_(models.Report.target_type == "comment", models.Report.target_id == comment.id),
                      content_snapshot=comment.comment)
 
     db.delete(comment)
@@ -348,7 +355,7 @@ def remove_story(id: int, remove: schemas.ContentRemove, db: Session = Depends(d
 
     # Kein Snapshot: Story ist nur ein Bild, und Bilder speichern wir bewusst nicht.
     _prepare_removal(db, current_user, "delete_story", story.owner_id, story.id, remove,
-                     models.Report.story_id == story.id)
+                     and_(models.Report.target_type == "story", models.Report.target_id == story.id))
 
     delete_story_image(story.image_url, db)
     db.delete(story)
@@ -370,11 +377,11 @@ def remove_profile_picture(id: int, remove: schemas.ContentRemove, db: Session =
                             detail="user has no profile picture")
 
     R = models.Report
-    # User-Meldungen = alle drei Ziel-Spalten NULL. Die bleiben offen (User existiert
-    # weiter, kein CASCADE) — erledigt werden sie ueber /admin/reports/resolve.
+    # User-Meldungen bleiben offen: sie koennen auch Name oder Bio betreffen.
+    # Erledigt werden sie ueber /admin/reports/resolve.
     _prepare_removal(db, current_user, "delete_profile_picture", user.id, None, remove,
-                     and_(R.reported_user_id == user.id, R.post_id.is_(None),
-                          R.story_id.is_(None), R.comment_id.is_(None)))
+                     and_(R.target_type == "user", R.reported_user_id == user.id),
+                     close_reports=False)
 
     delete_user_image(user.profile_picture_url, db)
     user.profile_picture_url = None

@@ -57,8 +57,8 @@ def clear_moderation_snapshots(
     db: Session = Depends(get_dp),
     x_cleanup_secret: Optional[str] = Header(default=None),
 ):
-    """Leert content_snapshot im Audit-Log (die Zeile selbst bleibt stehen).
-    Wird 1x täglich vom externen Scheduler aufgerufen (wie der Story-Cleanup)."""
+    """Leert content_snapshot im Audit-Log und in erledigten Meldungen (die Zeilen
+    selbst bleiben stehen). Wird 1x täglich vom externen Scheduler aufgerufen."""
     if x_cleanup_secret != settings.story_cleanup_secret:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid cleanup secret")
 
@@ -71,5 +71,13 @@ def clear_moderation_snapshots(
             M.target_user_id.is_(None)),
     ).update({M.content_snapshot: None}, synchronize_session=False)
 
+    R = models.Report
+    # Nur ERLEDIGTE Meldungen (resolved_at gesetzt): offene brauchen den Snapshot
+    # noch fuer die Entscheidung. Account geloescht -> Meldungen sind per CASCADE weg.
+    cleared_reports = db.query(R).filter(
+        R.content_snapshot.isnot(None),
+        R.resolved_at < func.now() - timedelta(days=SNAPSHOT_RETENTION_DAYS),
+    ).update({R.content_snapshot: None}, synchronize_session=False)
+
     db.commit()
-    return {"cleared": cleared}
+    return {"cleared": cleared, "cleared_reports": cleared_reports}

@@ -35,19 +35,18 @@ def get_comments(
         )
 
     # Stufe B vom Report-System: Kommentare, die ICH gemeldet habe, sehe ich nicht mehr.
-    reported_comment_ids = [
-        row.comment_id
-        for row in db.query(models.Report.comment_id).filter(
-            models.Report.reporter_id == current_user.id,
-            models.Report.comment_id.isnot(None),
-        ).all()
-    ]
+    # Korrelierte Subquery (wie im Feed): laeuft in derselben Anweisung mit, kein extra Rundweg.
+    ich_habe_gemeldet = db.query(models.Report).filter(
+        models.Report.reporter_id == current_user.id,
+        models.Report.target_type == "comment",
+        models.Report.target_id == models.Comments.id,
+    ).exists()
 
     # Kommentare holen
     comments = db.query(models.Comments, models.User.username)\
     .join(models.User, models.User.id == models.Comments.user_id)\
     .filter(models.Comments.post_id == id)\
-    .filter(models.Comments.id.notin_(reported_comment_ids))\
+    .filter(~ich_habe_gemeldet)\
     .all()
 
     return [{"id": comment.id, "comment": comment.comment, "username": username, "post_id": comment.post_id} for comment, username in comments]

@@ -9,7 +9,7 @@ router = APIRouter(
 
 
 def _create_report(db: Session, reporter_id: int, reported_user_id: int, report: schemas.ReportCreate,
-                   post_id: int = None, story_id: int = None, comment_id: int = None):
+                   target_type: str, target_id: int = None, content_snapshot: str = None):
     """Gemeinsamer Teil aller Routen: Selbst-Report abfangen,
     Duplikat prüfen, Report anlegen."""
 
@@ -17,14 +17,13 @@ def _create_report(db: Session, reporter_id: int, reported_user_id: int, report:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
                             detail="you cannot report yourself or your own content")
 
-    # Duplikat-Check: gleicher Melder + gleiches Ziel. Bei User-Reports sind
-    # post_id/story_id/comment_id alle None — der Vergleich mit None (IS NULL) passt dann genau.
+    # Duplikat-Check: gleicher Melder + gleiches Ziel. Bei User-Reports ist target_id None —
+    # der Vergleich mit None wird zu IS NULL, reported_user_id unterscheidet dann die User.
     duplicate = db.query(models.Report).filter(
         models.Report.reporter_id == reporter_id,
         models.Report.reported_user_id == reported_user_id,
-        models.Report.post_id == post_id,
-        models.Report.story_id == story_id,
-        models.Report.comment_id == comment_id
+        models.Report.target_type == target_type,
+        models.Report.target_id == target_id
     ).first()
 
     if duplicate:
@@ -32,8 +31,8 @@ def _create_report(db: Session, reporter_id: int, reported_user_id: int, report:
                             detail="you have already reported this")
 
     new_report = models.Report(reporter_id=reporter_id, reported_user_id=reported_user_id,
-                               reason=report.reason, details=report.details, post_id=post_id, story_id=story_id,
-                               comment_id=comment_id)
+                               reason=report.reason, details=report.details, target_type=target_type,
+                               target_id=target_id, content_snapshot=content_snapshot)
     db.add(new_report)
     db.commit()
 
@@ -50,7 +49,8 @@ def report_post(id: int, report: schemas.ReportCreate, db: Session = Depends(dat
                             detail=f"post with id {id} does not exist")
 
     return _create_report(db, reporter_id=current_user.id, reported_user_id=post.owner_id,
-                          report=report, post_id=post.id)
+                          report=report, target_type="post", target_id=post.id,
+                          content_snapshot=f"{post.title}\n\n{post.content}")
 
 
 @router.post("/story/{id}", status_code=status.HTTP_201_CREATED)
@@ -63,7 +63,7 @@ def report_story(id: int, report: schemas.ReportCreate, db: Session = Depends(da
                             detail=f"story with id {id} does not exist")
 
     return _create_report(db, reporter_id=current_user.id, reported_user_id=story.owner_id,
-                          report=report, story_id=story.id)
+                          report=report, target_type="story", target_id=story.id)
 
 
 @router.post("/comment/{id}", status_code=status.HTTP_201_CREATED)
@@ -76,7 +76,8 @@ def report_comment(id: int, report: schemas.ReportCreate, db: Session = Depends(
                             detail=f"comment with id {id} does not exist")
 
     return _create_report(db, reporter_id=current_user.id, reported_user_id=comment.user_id,
-                          report=report, comment_id=comment.id)
+                          report=report, target_type="comment", target_id=comment.id,
+                          content_snapshot=comment.comment)
 
 
 @router.post("/user/{id}", status_code=status.HTTP_201_CREATED)
@@ -89,5 +90,5 @@ def report_user(id: int, report: schemas.ReportCreate, db: Session = Depends(dat
                             detail=f"user with id {id} does not exist")
 
     return _create_report(db, reporter_id=current_user.id, reported_user_id=user.id,
-                          report=report)
+                          report=report, target_type="user")
 

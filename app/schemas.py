@@ -256,7 +256,10 @@ class ReportQueueItem(BaseModel):
     details: List[str]       # alle Freitexte der Melder
     first_reported_at: datetime
     last_reported_at: datetime
-    preview: Optional[ReportPreview] = None  # None = Inhalt inzwischen geloescht
+    # Inhalt noch da -> live. Geloescht -> Text-Kopie vom Melden (nur content),
+    # bei Storys gar nichts (None), weil Bilder nicht kopiert werden.
+    preview: Optional[ReportPreview] = None
+    content_deleted: bool = False
 
 
 class ReportResolve(BaseModel):

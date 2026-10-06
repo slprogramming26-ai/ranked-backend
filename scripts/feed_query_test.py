@@ -145,7 +145,7 @@ abweichungen = [
 # gruenes Ergebnis dort nichts aus — das muss man wissen, nicht hoffen.
 meine_reports = db.query(models.Report).filter(
     models.Report.reporter_id == user.id,
-    models.Report.post_id.isnot(None),
+    models.Report.target_type == "post",
 ).count()
 
 print("\nGegenprobe")

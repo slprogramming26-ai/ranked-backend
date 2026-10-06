@@ -78,7 +78,8 @@ def _ich_habe_gemeldet(db: Session, current_user: models.User):
     """
     return db.query(models.Report).filter(
         models.Report.reporter_id == current_user.id,
-        models.Report.post_id == models.Post.id,
+        models.Report.target_type == "post",
+        models.Report.target_id == models.Post.id,
     ).exists()
 
 

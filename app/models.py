@@ -273,10 +273,14 @@ class Report(Base):
     # index=True: Feed/Stories/Comments fragen bei JEDEM Abruf "was habe ICH gemeldet?" ab.
     reporter_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     reported_user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    # Was wurde gemeldet? Genau eines gesetzt = Post/Story/Comment-Report, alle NULL = User selbst (Name/Profilbild)
-    post_id = Column(Integer, ForeignKey("posts.id", ondelete="CASCADE"), nullable=True)
-    story_id = Column(Integer, ForeignKey("stories.id", ondelete="CASCADE"), nullable=True)
-    comment_id = Column(Integer, ForeignKey("comments.id", ondelete="CASCADE"), nullable=True)
+    # Was wurde gemeldet? target_id bewusst OHNE ForeignKey: loescht der User seinen
+    # Post, muss die Meldung trotzdem stehen bleiben (sonst: loeschen, neu hochladen, nie erwischt).
+    # Bei 'user' ist target_id NULL, das Ziel ist dann reported_user_id.
+    target_type = Column(String, nullable=False)
+    target_id = Column(Integer, nullable=True)
+    # Text-Kopie beim Melden (Post: Titel + Text, Kommentar: Text). Beleg, falls der Inhalt
+    # geloescht oder bearbeitet wird. Bilder bewusst nicht. Wird per Cleanup geleert.
+    content_snapshot = Column(String, nullable=True)
     # Feste Kategorie (Liste in schemas.ReportReason), damit die Moderation pro Ziel
     # sauber zaehlen kann ("Spam: 10, Belaestigung: 3"). Freitext gehoert in details.
     reason = Column(String, nullable=False)
@@ -291,6 +295,11 @@ class Report(Base):
         CheckConstraint("reason IN ('spam', 'harassment', 'inappropriate', 'misinformation', 'other')",
                         name="ck_reports_reason"),
         CheckConstraint("status IN ('pending', 'dismissed', 'action_taken')", name="ck_reports_status"),
+        CheckConstraint("target_type IN ('post', 'story', 'comment', 'user')", name="ck_reports_target_type"),
+        # 'user' <=> kein target_id. Verhindert halbe Zeilen wie ('post', NULL).
+        CheckConstraint("(target_type = 'user') = (target_id IS NULL)", name="ck_reports_target_id"),
+        # Resolve + "Meldungen zu diesem Ziel" suchen nach genau diesem Paar.
+        Index('ix_reports_target_type_target_id', 'target_type', 'target_id'),
     )
 
 

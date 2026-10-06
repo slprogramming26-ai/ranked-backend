@@ -1,6 +1,7 @@
 from fastapi import Response, status, HTTPException, Depends, APIRouter, UploadFile, File, Header
 from fastapi.concurrency import run_in_threadpool
-from sqlalchemy.orm import Session
+from sqlalchemy import or_
+from sqlalchemy.orm import Session, joinedload
 from typing import List, Optional
 from datetime import datetime, timedelta, timezone
 from PIL import Image
@@ -132,32 +133,33 @@ def get_stories(
     db: Session = Depends(get_dp),
     current_user: int = Depends(oauth2.get_current_user)
 ):
-    # 1. Wem folgt der aktuelle User? -> Liste der followee_ids
-    followee_ids = [
-        row.followee_id
-        for row in db.query(models.Follows.followee_id).filter(
-            models.Follows.follower_id == current_user.id
-        ).all()
-    ]
-    # Sich selbst dazunehmen, damit man die eigenen Stories auch sieht.
-    visible_owner_ids = followee_ids + [current_user.id]
+    # Alles in EINER Anweisung: die beiden Hilfsabfragen laufen als Subqueries
+    # in der Datenbank mit, statt vorher je einen eigenen Rundweg zu kosten.
+
+    # 1. Wem folgt der aktuelle User? (Subquery, wird nie ausgefuehrt fuer sich)
+    followee_ids = db.query(models.Follows.followee_id).filter(
+        models.Follows.follower_id == current_user.id
+    )
 
     # 2. Nur Stories, die jünger als STORY_LIFETIME (1 Tag) sind.
     cutoff = datetime.now(timezone.utc) - STORY_LIFETIME
 
     # 3. Stufe B vom Report-System: Stories, die ICH gemeldet habe, sehe ich nicht mehr.
-    reported_story_ids = [
-        row.story_id
-        for row in db.query(models.Report.story_id).filter(
-            models.Report.reporter_id == current_user.id,
-            models.Report.story_id.isnot(None),
-        ).all()
-    ]
+    ich_habe_gemeldet = db.query(models.Report).filter(
+        models.Report.reporter_id == current_user.id,
+        models.Report.target_type == "story",
+        models.Report.target_id == models.Story.id,
+    ).exists()
 
-    stories = db.query(models.Story).filter(
-        models.Story.owner_id.in_(visible_owner_ids),
+    stories = db.query(models.Story).options(
+        # Besitzer gleich mitladen, sonst eine Extra-Abfrage pro Besitzer bei story.owner.
+        joinedload(models.Story.owner)
+    ).filter(
+        # Eigene Stories sieht man auch.
+        or_(models.Story.owner_id.in_(followee_ids),
+            models.Story.owner_id == current_user.id),
         models.Story.created_at >= cutoff,
-        models.Story.id.notin_(reported_story_ids),
+        ~ich_habe_gemeldet,
     ).order_by(models.Story.created_at.desc()).all()
 
     return [
