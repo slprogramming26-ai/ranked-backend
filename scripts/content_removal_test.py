@@ -72,6 +72,11 @@ try:
     db.add(comment)
     db.flush()
 
+    R = models.Report
+    # In der echten DB kann a schon offene User-Meldungen haben -> Grundstand merken.
+    user_meldungen_vorher = db.query(R).filter(R.reported_user_id == a.id, R.target_type == "user",
+                                               R.status == "pending").count()
+
     db.add_all([
         models.Report(reporter_id=b.id, reported_user_id=a.id, reason="spam", target_type="post", target_id=post.id),
         models.Report(reporter_id=adm.id, reported_user_id=a.id, reason="spam", target_type="post", target_id=post.id),
@@ -82,7 +87,6 @@ try:
     ])
     db.flush()
     post_id, comment_id, story_id = post.id, comment.id, story.id
-    R = models.Report
 
     def meldungen(ttype, tid):
         return db.query(R).filter(R.target_type == ttype, R.target_id == tid).all()
@@ -125,10 +129,12 @@ try:
     db.expire_all()
     check("Profilbild-URL leer", db.get(models.User, a.id).profile_picture_url is None)
     log = letzter_log("delete_profile_picture")
-    check("Log: target_id leer, 1 User-Meldung", log.target_id is None and log.extra == {"reports": 1}, log.extra)
+    erwartet = user_meldungen_vorher + 1
+    check(f"Log: target_id leer, {erwartet} User-Meldung(en)",
+          log.target_id is None and log.extra == {"reports": erwartet}, log.extra)
     offen = db.query(R).filter(R.reported_user_id == a.id, R.target_type == "user",
                                R.status == "pending").count()
-    check("User-Meldung bleibt offen", offen == 1)
+    check("User-Meldungen bleiben offen", offen == erwartet, offen)
 
     print("\n5) Verbotenes")
     vorher = db.query(M).count()

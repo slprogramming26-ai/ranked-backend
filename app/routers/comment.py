@@ -17,7 +17,7 @@ def create_comment(comment: schemas.CreateComment,db: Session = Depends(get_dp),
     db.add(new_comment)
     db.commit()
     db.refresh(new_comment)
-    return {'id': new_comment.id, 'comment': new_comment.comment, 'username': current_user.username, 'post_id': new_comment.post_id}
+    return {'id': new_comment.id, 'comment': new_comment.comment, 'username': current_user.username, 'post_id': new_comment.post_id, 'is_mine': True}
 
 @router.get("/{id}", response_model=List[schemas.CommentOut])
 def get_comments(
@@ -49,4 +49,23 @@ def get_comments(
     .filter(~ich_habe_gemeldet)\
     .all()
 
-    return [{"id": comment.id, "comment": comment.comment, "username": username, "post_id": comment.post_id} for comment, username in comments]
+    return [{"id": comment.id, "comment": comment.comment, "username": username, "post_id": comment.post_id,
+             "is_mine": comment.user_id == current_user.id} for comment, username in comments]
+
+
+@router.delete("/{id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_comment(id: int, db: Session = Depends(get_dp), current_user: int = Depends(oauth2.get_current_user)):
+
+    comment = db.get(models.Comments, id)
+
+    if comment is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Comment with id: {id} was not found")
+
+    if comment.user_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorize to perform requested action")
+
+    # Meldungen auf den Kommentar bleiben (kein FK seit Reports-Umbau)
+    db.delete(comment)
+    db.commit()
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

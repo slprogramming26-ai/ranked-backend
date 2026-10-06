@@ -203,6 +203,24 @@ CREATE TABLE group_message (
 
 
 
+-- TABELLE key_backups
+
+CREATE TABLE key_backups (
+	user_id INTEGER NOT NULL, 
+	secret_type VARCHAR NOT NULL, 
+	salt VARCHAR NOT NULL, 
+	nonce VARCHAR NOT NULL, 
+	ciphertext VARCHAR NOT NULL, 
+	opslimit INTEGER NOT NULL, 
+	memlimit INTEGER NOT NULL, 
+	updated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	PRIMARY KEY (user_id), 
+	CONSTRAINT ck_key_backups_secret_type CHECK (secret_type IN ('login_password', 'custom')), 
+	FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE CASCADE
+)
+
+
+
 -- TABELLE locations
 
 CREATE TABLE locations (
@@ -226,6 +244,26 @@ CREATE TABLE message (
 	PRIMARY KEY (id), 
 	FOREIGN KEY(sender_id) REFERENCES users (id) ON DELETE CASCADE, 
 	FOREIGN KEY(recipient_id) REFERENCES users (id) ON DELETE CASCADE
+)
+
+
+
+-- TABELLE moderation_actions
+
+CREATE TABLE moderation_actions (
+	id SERIAL NOT NULL, 
+	moderator_id INTEGER, 
+	target_user_id INTEGER, 
+	action VARCHAR NOT NULL, 
+	target_id INTEGER, 
+	reason VARCHAR, 
+	content_snapshot VARCHAR, 
+	extra JSONB, 
+	created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	PRIMARY KEY (id), 
+	CONSTRAINT ck_moderation_actions_action CHECK (action IN ('ban', 'unban', 'resolve_reports', 'delete_post', 'delete_comment', 'delete_story', 'delete_profile_picture', 'role_change')), 
+	FOREIGN KEY(moderator_id) REFERENCES users (id) ON DELETE SET NULL, 
+	FOREIGN KEY(target_user_id) REFERENCES users (id) ON DELETE SET NULL
 )
 
 
@@ -286,18 +324,23 @@ CREATE TABLE reports (
 	id SERIAL NOT NULL, 
 	reporter_id INTEGER NOT NULL, 
 	reported_user_id INTEGER NOT NULL, 
-	post_id INTEGER, 
-	story_id INTEGER, 
-	comment_id INTEGER, 
+	target_type VARCHAR NOT NULL, 
+	target_id INTEGER, 
+	content_snapshot VARCHAR, 
 	reason VARCHAR NOT NULL, 
+	details VARCHAR, 
 	status VARCHAR DEFAULT 'pending' NOT NULL, 
 	created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	resolved_by INTEGER, 
+	resolved_at TIMESTAMP WITH TIME ZONE, 
 	PRIMARY KEY (id), 
+	CONSTRAINT ck_reports_reason CHECK (reason IN ('spam', 'harassment', 'inappropriate', 'misinformation', 'other')), 
+	CONSTRAINT ck_reports_status CHECK (status IN ('pending', 'dismissed', 'action_taken')), 
+	CONSTRAINT ck_reports_target_type CHECK (target_type IN ('post', 'story', 'comment', 'user')), 
+	CONSTRAINT ck_reports_target_id CHECK ((target_type = 'user') = (target_id IS NULL)), 
 	FOREIGN KEY(reporter_id) REFERENCES users (id) ON DELETE CASCADE, 
 	FOREIGN KEY(reported_user_id) REFERENCES users (id) ON DELETE CASCADE, 
-	FOREIGN KEY(post_id) REFERENCES posts (id) ON DELETE CASCADE, 
-	FOREIGN KEY(story_id) REFERENCES stories (id) ON DELETE CASCADE, 
-	FOREIGN KEY(comment_id) REFERENCES comments (id) ON DELETE CASCADE
+	FOREIGN KEY(resolved_by) REFERENCES users (id) ON DELETE SET NULL
 )
 
 
@@ -344,6 +387,9 @@ CREATE TABLE users (
 	streak_count INTEGER DEFAULT 0 NOT NULL, 
 	last_swipe_date DATE, 
 	location_id INTEGER, 
+	role user_roles DEFAULT 'user' NOT NULL, 
+	banned_until TIMESTAMP WITH TIME ZONE, 
+	ban_reason VARCHAR, 
 	PRIMARY KEY (id), 
 	UNIQUE (email), 
 	UNIQUE (username), 

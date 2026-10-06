@@ -348,6 +348,7 @@ class CommentOut(BaseModel):
     username: str
     post_id: int
     comment: str
+    is_mine: bool  # eigener Kommentar -> Frontend zeigt Löschen statt Melden
 
     model_config = ConfigDict(from_attributes=True)
 

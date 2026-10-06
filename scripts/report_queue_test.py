@@ -198,7 +198,8 @@ try:
           db.query(R).filter(R.reporter_id == c.id, R.target_type == "user").count() == 2)
 
     print("\n8) Ich-habe-gemeldet-Filter (Kommentare + Storys)")
-    db.add(models.Follows(follower_id=b.id, followee_id=a.id))
+    # merge statt add: in der echten DB folgt b dem a evtl. schon.
+    db.merge(models.Follows(follower_id=b.id, followee_id=a.id))
     db.flush()
     ids = [k["id"] for k in get_comments(p3.id, db=db, current_user=b)]
     check("b sieht gemeldeten Kommentar NICHT", cm.id not in ids)
