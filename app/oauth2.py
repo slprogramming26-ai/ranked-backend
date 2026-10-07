@@ -70,9 +70,13 @@ def check_not_banned(user: models.User):
     if user.banned_until is not None and user.banned_until > datetime.now(timezone.utc):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"account suspended until {user.banned_until.isoformat()}"
+            # Objekt statt Text, damit das Frontend Grund und Ende getrennt anzeigen kann
+            detail={
+                "code": "account_suspended",
+                "banned_until": user.banned_until.isoformat(),
+                "ban_reason": user.ban_reason,
+            }
         )
-
 
 ROLE_RANK = {"user": 0, "moderator": 1, "admin": 2}
 
