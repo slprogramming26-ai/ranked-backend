@@ -284,7 +284,7 @@ class ContentRemove(BaseModel):
 
 
 ModerationActionType = Literal["ban", "unban", "resolve_reports", "delete_post", "delete_comment",
-                               "delete_story", "delete_profile_picture", "role_change"]
+                               "delete_story", "delete_profile_picture", "role_change", "restore_content"]
 
 
 class ModerationActionOut(BaseModel):

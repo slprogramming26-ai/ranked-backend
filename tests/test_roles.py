@@ -53,7 +53,8 @@ def test_aktive_sperre_gibt_403():
     with pytest.raises(HTTPException) as e:
         call_current_user(user)
     assert e.value.status_code == 403
-    assert "suspended" in e.value.detail
+    assert e.value.detail["code"] == "account_suspended"
+    assert e.value.detail["banned_until"] == user.banned_until.isoformat()
 
 
 def test_abgelaufene_sperre_hebt_sich_selbst_auf():

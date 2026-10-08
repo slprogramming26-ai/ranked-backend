@@ -261,7 +261,7 @@ CREATE TABLE moderation_actions (
 	extra JSONB, 
 	created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
 	PRIMARY KEY (id), 
-	CONSTRAINT ck_moderation_actions_action CHECK (action IN ('ban', 'unban', 'resolve_reports', 'delete_post', 'delete_comment', 'delete_story', 'delete_profile_picture', 'role_change')), 
+	CONSTRAINT ck_moderation_actions_action CHECK (action IN ('ban', 'unban', 'resolve_reports', 'delete_post', 'delete_comment', 'delete_story', 'delete_profile_picture', 'role_change', 'restore_content')), 
 	FOREIGN KEY(moderator_id) REFERENCES users (id) ON DELETE SET NULL, 
 	FOREIGN KEY(target_user_id) REFERENCES users (id) ON DELETE SET NULL
 )
@@ -314,6 +314,26 @@ CREATE TABLE refresh_tokens (
 	PRIMARY KEY (id), 
 	FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE CASCADE, 
 	UNIQUE (token_hash)
+)
+
+
+
+-- TABELLE removed_content
+
+CREATE TABLE removed_content (
+	id SERIAL NOT NULL, 
+	target_type VARCHAR NOT NULL, 
+	target_id INTEGER, 
+	owner_id INTEGER NOT NULL, 
+	moderation_action_id INTEGER, 
+	image_url VARCHAR, 
+	data JSONB NOT NULL, 
+	removed_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	PRIMARY KEY (id), 
+	CONSTRAINT ck_removed_content_target_type CHECK (target_type IN ('post', 'comment', 'story', 'profile_picture')), 
+	FOREIGN KEY(owner_id) REFERENCES users (id) ON DELETE CASCADE, 
+	UNIQUE (moderation_action_id), 
+	FOREIGN KEY(moderation_action_id) REFERENCES moderation_actions (id) ON DELETE SET NULL
 )
 
 

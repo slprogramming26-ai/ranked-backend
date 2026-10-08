@@ -334,9 +334,42 @@ class ModerationAction(Base):
     __table_args__ = (
         CheckConstraint(
             "action IN ('ban', 'unban', 'resolve_reports', 'delete_post', 'delete_comment', "
-            "'delete_story', 'delete_profile_picture', 'role_change')",
+            "'delete_story', 'delete_profile_picture', 'role_change', 'restore_content')",
+
             name="ck_moderation_actions_action"),
     )
+
+
+class RemovedContent(Base):
+    """Archiv fuer von Mods entfernte Inhalte. Die Originalzeile wird geloescht (keine
+    bestehende Abfrage braucht einen Filter), hier liegt eine Kopie fuer Widerspruch
+    und Wiederherstellung. Nach 180 Tagen raeumt DELETE /cleanup/removed_content auf."""
+
+    __tablename__ = 'removed_content'
+
+    id = Column(Integer, primary_key=True, nullable=False)
+    target_type = Column(String, nullable=False)
+    # Bewusst KEIN FK: die Originalzeile existiert ja nicht mehr. NULL bei profile_picture.
+    target_id = Column(Integer, nullable=True)
+    # CASCADE: loescht der User seinen Account, ist auch sein Archiv weg (DSGVO).
+    owner_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    # Bruecke zum Audit-Log: Restore laeuft ueber die Action-ID. unique = eine Aktion, ein Archiv.
+    moderation_action_id = Column(Integer, ForeignKey("moderation_actions.id", ondelete="SET NULL"),
+                                  nullable=True, unique=True)
+    # Eigene Spalte, damit Cron und delete_account das S3-Bild finden, ohne JSON zu parsen.
+    image_url = Column(String, nullable=True)
+    # Komplette alte Zeile(n) per to_jsonb, Restore schreibt sie mit jsonb_populate_record zurueck.
+    # Bei Posts: {"post": ..., "comments": [...], "votes": [...], "ranking_scores": [...]}
+    data = Column(JSONB, nullable=False)
+    # index=True: der Cron sucht "aelter als 180 Tage"
+    removed_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text('now()'), index=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "target_type IN ('post', 'comment', 'story', 'profile_picture')",
+            name="ck_removed_content_target_type"),
+    )
+
 
 
 class UserKey(Base):

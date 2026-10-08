@@ -1,14 +1,11 @@
 from datetime import datetime, timedelta, timezone
 from typing import List, Literal
 from fastapi import APIRouter, Depends, status, HTTPException, Query, Response
-from sqlalchemy import and_, func
+from sqlalchemy import and_, func, text
 from sqlalchemy.dialects.postgresql import aggregate_order_by
 from sqlalchemy.orm import Session, joinedload
 from .. import schemas, database, models, oauth2
-# Jeder Router kennt nur seinen eigenen Bucket -> pro Inhaltstyp die passende Funktion.
-from .post import delete_s3_object as delete_post_image
-from .story import delete_s3_object as delete_story_image
-from .user import delete_s3_object as delete_user_image
+from .story import STORY_LIFETIME
 
 # EIN Objekt fuer Router-Ebene UND Routen-Parameter: FastAPI fuehrt dieselbe
 # Dependency pro Request nur einmal aus. Zwei getrennte require_role("moderator")-
@@ -58,10 +55,12 @@ def _log_action(db: Session, moderator: models.User, action: str, target_user_id
                 extra: dict = None):
     """Audit-Zeile anlegen. Bewusst KEIN commit: der Aufrufer committet Aktion
     und Log zusammen — entweder landet beides in der DB oder nichts."""
-    db.add(models.ModerationAction(moderator_id=moderator.id, action=action,
-                                   target_user_id=target_user_id, target_id=target_id,
-                                   reason=reason, content_snapshot=content_snapshot,
-                                   extra=extra))
+    action_row = models.ModerationAction(moderator_id=moderator.id, action=action,
+                                         target_user_id=target_user_id, target_id=target_id,
+                                         reason=reason, content_snapshot=content_snapshot,
+                                         extra=extra)
+    db.add(action_row)
+    return action_row
 
 
 def _prepare_removal(db: Session, current_user: models.User, action: str, owner_id: int,
@@ -90,8 +89,107 @@ def _prepare_removal(db: Session, current_user: models.User, action: str, owner_
     if remove.details is not None:
         extra["details"] = remove.details
 
-    _log_action(db, current_user, action, owner_id, target_id=target_id,
-                reason=remove.reason, content_snapshot=content_snapshot, extra=extra)
+    return _log_action(db, current_user, action, owner_id, target_id=target_id,
+                       reason=remove.reason, content_snapshot=content_snapshot, extra=extra)
+
+
+def _archive(db: Session, action_row: models.ModerationAction, target_type: str, owner_id: int,
+             target_id: int, image_url: str, data_sql: str):
+    """Kopie des Inhalts nach removed_content, VOR dem Loeschen aufrufen. data_sql ist eine
+    Unterabfrage, die genau EIN jsonb liefert; sie darf :target_id und :image_url benutzen.
+    INSERT ... SELECT: die Daten wandern nur innerhalb von Postgres, nie durch Python."""
+
+    # flush schickt die Log-Zeile ab -> action_row.id ist gesetzt (noch kein commit)
+    db.flush()
+    db.execute(text(f"""
+        INSERT INTO removed_content (target_type, target_id, owner_id, moderation_action_id, image_url, data)
+        VALUES (:target_type, :target_id, :owner_id, :action_id, :image_url, ({data_sql}))
+    """), {"target_type": target_type, "target_id": target_id, "owner_id": owner_id,
+           "action_id": action_row.id, "image_url": image_url})
+
+
+def _restore_comment(db: Session, archived: models.RemovedContent):
+    """Kommentar mit derselben ID zurueck - geht nur, wenn sein Post noch existiert."""
+
+    if db.get(models.Post, archived.data["post_id"]) is None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                            detail="the post of this comment no longer exists "
+                                   "(if it was removed by moderation, restore the post first)")
+
+    db.execute(text("""
+        INSERT INTO comments
+        SELECT * FROM jsonb_populate_record(NULL::comments,
+            (SELECT data FROM removed_content WHERE id = :rc_id))
+    """), {"rc_id": archived.id})
+
+
+def _restore_story(db: Session, archived: models.RemovedContent):
+    """Story mit derselben ID zurueck - aber nur innerhalb ihrer Laufzeit, sonst wuerde
+    cleanup_expired_stories sie beim naechsten Lauf sofort wieder loeschen."""
+
+    created_at = datetime.fromisoformat(archived.data["created_at"])
+    if created_at < datetime.now(timezone.utc) - STORY_LIFETIME:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                            detail="story has expired, restoring it makes no sense")
+
+    db.execute(text("""
+        INSERT INTO stories
+        SELECT * FROM jsonb_populate_record(NULL::stories,
+            (SELECT data FROM removed_content WHERE id = :rc_id))
+    """), {"rc_id": archived.id})
+
+
+def _restore_profile_picture(db: Session, archived: models.RemovedContent):
+    """Altes Profilbild zurueck - aber nie ueber ein neues drueber, das der User
+    inzwischen hochgeladen hat (er verloere es, und es laege verwaist in S3)."""
+
+    # Der Owner ist schon geladen (_get_target_below_me) -> kein extra Rundweg
+    user = db.get(models.User, archived.owner_id)
+    if user.profile_picture_url is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                            detail="user has uploaded a new profile picture in the meantime")
+
+    user.profile_picture_url = archived.data["profile_picture_url"]
+
+
+
+def _restore_post(db: Session, archived: models.RemovedContent, extra: dict):
+    """Post mit derselben ID zurueck, danach die Kinder. Alles liest direkt aus removed_content
+    (:rc_id) -> das JSON muss nicht als Parameter durch den Treiber."""
+
+    params = {"rc_id": archived.id, "post_id": archived.target_id}
+
+    # Ort inzwischen aus dem Katalog geloescht? Dann ohne Ort zurueck, wie ON DELETE SET NULL
+    # es bei einem lebenden Post auch gemacht haette.
+    location_id = archived.data["post"]["location_id"]
+    drop_location = location_id is not None and db.get(models.Location, location_id) is None
+    if drop_location:
+        extra["location_dropped"] = True
+
+    # || verschmilzt zwei JSON-Objekte, rechts gewinnt -> ueberschreibt nur location_id
+    db.execute(text("""
+        INSERT INTO posts
+        SELECT * FROM jsonb_populate_record(NULL::posts,
+            (SELECT data -> 'post' FROM removed_content WHERE id = :rc_id)
+            || CASE WHEN CAST(:drop_location AS boolean)
+                    THEN '{"location_id": null}'::jsonb ELSE '{}'::jsonb END)
+    """), {**params, "drop_location": drop_location})
+
+    # Kinder: der JSON-Schluessel heisst wie die Tabelle. Nur Zeilen zurueck, deren User
+    # noch existiert - sonst wuerde der FK den ganzen Restore scheitern lassen.
+    for table, user_col in (("comments", "user_id"), ("votes", "user_id"), ("ranking_scores", "voter_id")):
+        db.execute(text(f"""
+            INSERT INTO {table}
+            SELECT r.* FROM jsonb_populate_recordset(NULL::{table},
+                (SELECT data -> '{table}' FROM removed_content WHERE id = :rc_id)) r
+            WHERE EXISTS (SELECT 1 FROM users u WHERE u.id = r.{user_col})
+        """), params)
+
+    # Der alte Zaehler kam mit dem Post zurueck; Votes geloeschter User fehlen aber -> neu zaehlen
+    db.execute(text("""
+        UPDATE posts SET vote_count = (SELECT count(*) FROM votes WHERE post_id = :post_id)
+        WHERE id = :post_id
+    """), params)
 
 
 @router.post("/users/{id}/ban", response_model=schemas.BanOut)
@@ -303,7 +401,22 @@ def resolve_reports(resolve: schemas.ReportResolve, db: Session = Depends(databa
 # Inhalte entfernen
 # =========================================================
 # Ablauf ueberall gleich: laden (404) -> _prepare_removal (Rangregel, Meldungen
-# zaehlen, Log) -> Bild aus S3 -> Zeile loeschen -> EIN commit fuer alles.
+# zaehlen, Log) -> _archive (Kopie nach removed_content) -> Zeile loeschen -> EIN commit.
+# Bilder bleiben in S3, bis DELETE /cleanup/removed_content die Archivzeile abraeumt.
+
+# Unterabfragen fuer _archive. Jede haengt an einem Primaerschluessel (:target_id) bzw.
+# an post_id = p.id -> sie kann nie mehr als den einen Inhalt + seine Kinder erfassen.
+POST_ARCHIVE_SQL = """
+    SELECT jsonb_build_object(
+        'post', to_jsonb(p),
+        'comments', (SELECT coalesce(jsonb_agg(to_jsonb(c)), '[]'::jsonb) FROM comments c WHERE c.post_id = p.id),
+        'votes', (SELECT coalesce(jsonb_agg(to_jsonb(v)), '[]'::jsonb) FROM votes v WHERE v.post_id = p.id),
+        'ranking_scores', (SELECT coalesce(jsonb_agg(to_jsonb(r)), '[]'::jsonb) FROM ranking_scores r WHERE r.post_id = p.id))
+    FROM posts p WHERE p.id = :target_id"""
+COMMENT_ARCHIVE_SQL = "SELECT to_jsonb(c) FROM comments c WHERE c.id = :target_id"
+STORY_ARCHIVE_SQL = "SELECT to_jsonb(s) FROM stories s WHERE s.id = :target_id"
+PROFILE_PICTURE_ARCHIVE_SQL = "SELECT jsonb_build_object('profile_picture_url', CAST(:image_url AS text))"
+
 
 @router.delete("/posts/{id}", status_code=status.HTTP_204_NO_CONTENT)
 def remove_post(id: int, remove: schemas.ContentRemove, db: Session = Depends(database.get_dp),
@@ -314,12 +427,12 @@ def remove_post(id: int, remove: schemas.ContentRemove, db: Session = Depends(da
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
                             detail=f"post with id {id} does not exist")
 
-    _prepare_removal(db, current_user, "delete_post", post.owner_id, post.id, remove,
-                     and_(models.Report.target_type == "post", models.Report.target_id == post.id),
-                     content_snapshot=f"{post.title}\n\n{post.content}")
+    action_row = _prepare_removal(db, current_user, "delete_post", post.owner_id, post.id, remove,
+                                  and_(models.Report.target_type == "post", models.Report.target_id == post.id),
+                                  content_snapshot=f"{post.title}\n\n{post.content}")
 
-    delete_post_image(post.image_url, db)
-    db.delete(post)  # CASCADE: Votes, Kommentare. Meldungen bleiben (kein FK), siehe oben
+    _archive(db, action_row, "post", post.owner_id, post.id, post.image_url, POST_ARCHIVE_SQL)
+    db.delete(post)  # CASCADE: Votes, Kommentare, ranking_scores (stehen jetzt im Archiv)
     db.commit()
 
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -334,10 +447,11 @@ def remove_comment(id: int, remove: schemas.ContentRemove, db: Session = Depends
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
                             detail=f"comment with id {id} does not exist")
 
-    _prepare_removal(db, current_user, "delete_comment", comment.user_id, comment.id, remove,
-                     and_(models.Report.target_type == "comment", models.Report.target_id == comment.id),
-                     content_snapshot=comment.comment)
+    action_row = _prepare_removal(db, current_user, "delete_comment", comment.user_id, comment.id, remove,
+                                  and_(models.Report.target_type == "comment", models.Report.target_id == comment.id),
+                                  content_snapshot=comment.comment)
 
+    _archive(db, action_row, "comment", comment.user_id, comment.id, None, COMMENT_ARCHIVE_SQL)
     db.delete(comment)
     db.commit()
 
@@ -354,10 +468,10 @@ def remove_story(id: int, remove: schemas.ContentRemove, db: Session = Depends(d
                             detail=f"story with id {id} does not exist")
 
     # Kein Snapshot: Story ist nur ein Bild, und Bilder speichern wir bewusst nicht.
-    _prepare_removal(db, current_user, "delete_story", story.owner_id, story.id, remove,
-                     and_(models.Report.target_type == "story", models.Report.target_id == story.id))
+    action_row = _prepare_removal(db, current_user, "delete_story", story.owner_id, story.id, remove,
+                                  and_(models.Report.target_type == "story", models.Report.target_id == story.id))
 
-    delete_story_image(story.image_url, db)
+    _archive(db, action_row, "story", story.owner_id, story.id, story.image_url, STORY_ARCHIVE_SQL)
     db.delete(story)
     db.commit()
 
@@ -379,11 +493,14 @@ def remove_profile_picture(id: int, remove: schemas.ContentRemove, db: Session =
     R = models.Report
     # User-Meldungen bleiben offen: sie koennen auch Name oder Bio betreffen.
     # Erledigt werden sie ueber /admin/reports/resolve.
-    _prepare_removal(db, current_user, "delete_profile_picture", user.id, None, remove,
-                     and_(R.target_type == "user", R.reported_user_id == user.id),
-                     close_reports=False)
+    action_row = _prepare_removal(db, current_user, "delete_profile_picture", user.id, None, remove,
+                                  and_(R.target_type == "user", R.reported_user_id == user.id),
+                                  close_reports=False)
 
-    delete_user_image(user.profile_picture_url, db)
+    # VOR dem "= None": _archive braucht die URL noch
+    _archive(db, action_row, "profile_picture", user.id, None, user.profile_picture_url,
+             PROFILE_PICTURE_ARCHIVE_SQL)
+
     user.profile_picture_url = None
     db.commit()
 
@@ -416,6 +533,42 @@ def list_actions(action: schemas.ModerationActionType = None,
 
     # id als Gleichstand-Brecher: gleiche created_at -> trotzdem stabile Reihenfolge beim Blaettern.
     return query.order_by(M.created_at.desc(), M.id.desc()).offset(skip).limit(limit).all()
+
+
+@router.post("/actions/{action_id}/restore", response_model=schemas.ModerationActionOut)
+def restore_content(action_id: int, db: Session = Depends(database.get_dp),
+                    current_user: models.User = Depends(require_admin)):
+
+    RC = models.RemovedContent
+    # FOR UPDATE sperrt die Zeile bis zum commit: klicken zwei Admins gleichzeitig, wartet
+    # der zweite hier. Danach ist die Zeile weg -> sauberes 404 statt doppelter Inserts.
+    archived = db.query(RC).filter(RC.moderation_action_id == action_id).with_for_update().first()
+    if archived is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail=f"nothing to restore for action {action_id} "
+                                   "(not a removal, already restored or expired)")
+
+    _get_target_below_me(db, archived.owner_id, current_user)
+
+    # Die _restore_*-Funktionen werfen 409, wenn es nicht mehr geht, und duerfen
+    # in extra eintragen, was dabei aufgefallen ist (z.B. location_dropped).
+    extra = {"restored_action_id": action_id}
+    if archived.target_type == "post":
+        _restore_post(db, archived, extra)
+    elif archived.target_type == "comment":
+        _restore_comment(db, archived)
+    elif archived.target_type == "story":
+        _restore_story(db, archived)
+    else:
+        _restore_profile_picture(db, archived)
+
+    action_row = _log_action(db, current_user, "restore_content", archived.owner_id,
+                             target_id=archived.target_id, extra=extra)
+    db.delete(archived)
+    db.commit()
+    db.refresh(action_row)
+
+    return action_row
 
 
 # =========================================================

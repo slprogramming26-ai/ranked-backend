@@ -184,7 +184,8 @@ def test_login_gesperrt_403(monkeypatch):
     creds = SimpleNamespace(username=user.email, password="pw")
     # __wrapped__: am Rate-Limiter-Dekorator vorbei, der braucht einen echten Request
     e = assert_http(403, login.__wrapped__, request=None, user_credentials=creds, db=FakeDB(user))
-    assert "suspended" in e.detail
+    assert e.detail["code"] == "account_suspended"
+    assert e.detail["banned_until"] == user.banned_until.isoformat()
 
 
 def test_login_falsches_passwort_verraet_sperre_nicht(monkeypatch):

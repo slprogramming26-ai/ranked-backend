@@ -53,6 +53,15 @@ def delete_s3_object(image_url: str | None, db: Session):
         print(f"Warnung: S3-Bild konnte nicht gelöscht werden: {e}")
 
 
+def delete_archived_image(target_type: str, image_url: str | None, db: Session):
+    """Bild einer removed_content-Zeile aus dem passenden Bucket loeschen (Kommentare haben
+    keins). Steht hier, weil user.py alle drei Loeschfunktionen kennt; cleanup.py nutzt sie mit."""
+    deleters = {"post": delete_post_image, "story": delete_story_image, "profile_picture": delete_s3_object}
+    deleter = deleters.get(target_type)
+    if deleter is not None:
+        deleter(image_url, db)
+
+
 def _process_and_upload_image(contents: bytes, folder: str = "profile_picture") -> str:
     """Der BLOCKIERENDE Teil: Pillow-Verarbeitung (CPU) + S3-Upload (sync I/O).
     Läuft im Threadpool (siehe run_in_threadpool unten), damit der Event-Loop
@@ -332,6 +341,16 @@ def delete_account(current_user = Depends(oauth2.get_current_user),
     ).all()
     for group in groups:
         delete_s3_object(group.profile_picture, db)
+
+    # 2c. Bilder im Moderations-Archiv: CASCADE raeumt removed_content weg, und der
+    # Cleanup-Cron findet die Dateien nur ueber diese Zeilen -> jetzt oder nie.
+    RC = models.RemovedContent
+    archived = db.query(RC.target_type, RC.image_url).filter(
+        RC.owner_id == current_user.id,
+        RC.image_url.isnot(None),
+    ).all()
+    for row in archived:
+        delete_archived_image(row.target_type, row.image_url, db)
 
     # 3. Denormalisierten Zaehler korrigieren, BEVOR CASCADE die Votes wegraeumt.
     # Die Votes dieses Users liegen groesstenteils auf FREMDEN Posts — die
