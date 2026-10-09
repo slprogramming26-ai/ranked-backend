@@ -107,6 +107,10 @@ def _archive(db: Session, action_row: models.ModerationAction, target_type: str,
     """), {"target_type": target_type, "target_id": target_id, "owner_id": owner_id,
            "action_id": action_row.id, "image_url": image_url})
 
+    # Benachrichtigung an den Besitzer, im selben commit. payload = Log-ID -> das Frontend
+    # findet Grund + Details ueber GET /users/moderation.
+    db.add(models.Activity(user_id=owner_id, type="content_removed", payload=action_row.id))
+
 
 def _restore_comment(db: Session, archived: models.RemovedContent):
     """Kommentar mit derselben ID zurueck - geht nur, wenn sein Post noch existiert."""
@@ -564,6 +568,9 @@ def restore_content(action_id: int, db: Session = Depends(database.get_dp),
 
     action_row = _log_action(db, current_user, "restore_content", archived.owner_id,
                              target_id=archived.target_id, extra=extra)
+    # payload = die ALTE Loesch-Aktion (nicht der Restore-Log): genau die steht in
+    # GET /users/moderation, dort jetzt mit restored = true.
+    db.add(models.Activity(user_id=archived.owner_id, type="content_restored", payload=action_id))
     db.delete(archived)
     db.commit()
     db.refresh(action_row)

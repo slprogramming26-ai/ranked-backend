@@ -7,7 +7,7 @@ import boto3
 from ..config import settings
 from .. import models
 from ..database import get_dp
-from .user import delete_archived_image
+from .user import delete_archived_image, SNAPSHOT_RETENTION_DAYS
 
 router = APIRouter(
     prefix="/cleanup",
@@ -47,10 +47,6 @@ def retry_failed_deletions(
 
     db.commit()
     return {"deleted": deleted, "remaining": len(rows) - deleted}
-
-
-# Wie lange die Text-Kopie geloeschter Inhalte als Beleg im Audit-Log bleibt.
-SNAPSHOT_RETENTION_DAYS = 180
 
 
 @router.delete("/moderation_snapshots")

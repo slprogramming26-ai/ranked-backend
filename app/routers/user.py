@@ -1,7 +1,8 @@
 from fastapi import FastAPI, Response, status, HTTPException, Depends, APIRouter, Query, UploadFile, File, Request
 from fastapi.concurrency import run_in_threadpool
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 from typing import List, Optional
+from datetime import timedelta
 from PIL import Image
 import io
 import boto3
@@ -27,6 +28,10 @@ S3_ENDPOINT = f'{settings.s3_endpoint}'
 S3_ACCESS_KEY = f'{settings.s3_access_key}'
 S3_SECRET_KEY = f'{settings.s3_secret_key}'
 BUCKET_NAME = 'user_images'
+
+# Wie lange Snapshot im Audit-Log + Archiv in removed_content bleiben (= Widerspruchsfrist).
+# Steht hier statt in cleanup.py, weil cleanup.py aus user.py importiert (sonst Kreis-Import).
+SNAPSHOT_RETENTION_DAYS = 180
 
 s3_client = boto3.client(
     's3',
@@ -247,6 +252,47 @@ def get_blocked_users(current_user: int = Depends(oauth2.get_current_user), db: 
         "profile_picture_url": row.profile_picture_url,
         "blocked_at": row.created_at,
     } for row in rows]
+
+
+# Nur was den User selbst betrifft. unban/resolve_reports/role_change/restore_content bleiben intern.
+USER_VISIBLE_ACTIONS = ("ban", "delete_post", "delete_comment", "delete_story", "delete_profile_picture")
+
+
+# Muss VOR "/{id}" stehen (wie /blocked).
+@router.get("/moderation", response_model=List[schemas.MyModerationActionOut])
+def get_my_moderation(limit: int = Query(50, ge=1, le=200), skip: int = Query(0, ge=0),
+                      current_user: int = Depends(oauth2.get_current_user), db: Session = Depends(get_dp)):
+    """Massnahmen gegen mich, neueste zuerst (DSA Art. 17). Waehrend einer laufenden Sperre
+    kommt man hier nicht hin - die 403 von check_not_banned enthaelt Grund + Ende schon."""
+
+    M = models.ModerationAction
+    restore = aliased(M)
+    # EXISTS als Spalte -> "wurde das wiederhergestellt?" kommt in DERSELBEN Anweisung mit.
+    # target_user_id-Filter: der Restore-Log zeigt auf denselben User -> nutzt den Index.
+    restored = (db.query(restore.id)
+                .filter(restore.action == "restore_content",
+                        restore.target_user_id == current_user.id,
+                        restore.extra["restored_action_id"].as_integer() == M.id)
+                .exists())
+
+    rows = (db.query(M, restored.label("restored"))
+            .filter(M.target_user_id == current_user.id,
+                    M.action.in_(USER_VISIBLE_ACTIONS))
+            .order_by(M.created_at.desc(), M.id.desc())
+            .offset(skip).limit(limit).all())
+
+    # extra ist bei alten Zeilen evtl. None -> "or {}" spart den Sonderfall
+    return [{
+        "id": action.id,
+        "action": action.action,
+        "reason": action.reason,
+        "details": (action.extra or {}).get("details"),
+        "ban_days": (action.extra or {}).get("days") if action.action == "ban" else None,
+        "content_snapshot": action.content_snapshot,
+        "created_at": action.created_at,
+        "appeal_until": action.created_at + timedelta(days=SNAPSHOT_RETENTION_DAYS),
+        "restored": is_restored,
+    } for action, is_restored in rows]
 
 
 

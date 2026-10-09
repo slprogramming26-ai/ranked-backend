@@ -303,6 +303,20 @@ class ModerationActionOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class MyModerationActionOut(BaseModel):
+    """Eine Massnahme gegen MICH (DSA Art. 17: Begruendung an den Betroffenen).
+    Bewusst OHNE Moderator - Mods sollen nicht persoenlich angegangen werden."""
+    id: int
+    action: Literal["ban", "delete_post", "delete_comment", "delete_story", "delete_profile_picture"]
+    reason: Optional[str] = None           # bei delete_* eine ReportReason-Kategorie, bei ban Freitext
+    details: Optional[str] = None          # Zusatztext des Mods beim Entfernen
+    ban_days: Optional[int] = None         # nur bei ban; ban + None = permanent
+    content_snapshot: Optional[str] = None # None = nie gesetzt (Story/Bild) oder Frist um
+    created_at: datetime
+    appeal_until: datetime                 # bis dahin liegt der Inhalt im Archiv
+    restored: bool                         # ein Admin hat den Inhalt wiederhergestellt
+
+
 class RoleUpdate(BaseModel):
     role: Literal["user", "moderator", "admin"]
     reason: Optional[str] = Field(default=None, min_length=1, max_length=500)
