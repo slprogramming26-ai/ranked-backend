@@ -275,7 +275,18 @@ def get_my_moderation(limit: int = Query(50, ge=1, le=200), skip: int = Query(0,
                         restore.extra["restored_action_id"].as_integer() == M.id)
                 .exists())
 
-    rows = (db.query(M, restored.label("restored"))
+    # Gleiche Idee fuer Sperren: Zeitpunkt des unban-Logs, der auf diesen Ban zeigt.
+    # Nur ban-Zeilen haben so einen Partner -> bei delete_* kommt automatisch NULL.
+    # Alte unban-Logs ohne lifted_action_id treffen nie -> auch dort NULL.
+    unban = aliased(M)
+    lifted_at = (db.query(unban.created_at)
+                 .filter(unban.action == "unban",
+                         unban.target_user_id == current_user.id,
+                         unban.extra["lifted_action_id"].as_integer() == M.id)
+                 .limit(1)
+                 .scalar_subquery())
+
+    rows = (db.query(M, restored.label("restored"), lifted_at.label("lifted_at"))
             .filter(M.target_user_id == current_user.id,
                     M.action.in_(USER_VISIBLE_ACTIONS))
             .order_by(M.created_at.desc(), M.id.desc())
@@ -292,7 +303,8 @@ def get_my_moderation(limit: int = Query(50, ge=1, le=200), skip: int = Query(0,
         "created_at": action.created_at,
         "appeal_until": action.created_at + timedelta(days=SNAPSHOT_RETENTION_DAYS),
         "restored": is_restored,
-    } for action, is_restored in rows]
+        "lifted_at": lifted,
+    } for action, is_restored, lifted in rows]
 
 
 

@@ -25,6 +25,9 @@ class FakeQuery:
     def filter(self, *args):
         return self
 
+    def order_by(self, *args):
+        return self
+
     def first(self):
         return self.db.user if self.model is models.User else None
 
@@ -174,6 +177,14 @@ def test_unban():
 def test_unban_nicht_gesperrt_400():
     assert_http(400, unban_user, id=2, db=FakeDB(make_user(2)),
                 current_user=make_user(1, "moderator"))
+
+
+def test_unban_abgelaufene_sperre_400():
+    # banned_until bleibt nach Ablauf stehen -> darf nicht als "vorzeitig aufgehoben" zaehlen
+    target = make_user(2, banned_until=datetime.now(timezone.utc) - timedelta(days=1))
+    db = FakeDB(target)
+    assert_http(400, unban_user, id=2, db=db, current_user=make_user(1, "moderator"))
+    assert db.added == [] and not db.committed
 
 
 # --- Login ------------------------------------------------------------------

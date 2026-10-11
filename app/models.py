@@ -135,8 +135,8 @@ class Activity(Base):
 
     id = Column(Integer, primary_key=True, nullable=False)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)  # Empfänger
-    type = Column(String, nullable=False)  # "rated", "content_removed", "content_restored" (später "placement"/"streak"/"badge")
-    payload = Column(Integer, nullable=False)  # "rated": erhaltene Punkte; content_*: ID der Loesch-Aktion in moderation_actions
+    type = Column(String, nullable=False)  # "rated", "content_removed", "content_restored", "account_unbanned" (später "placement"/"streak"/"badge")
+    payload = Column(Integer, nullable=False)  # "rated": erhaltene Punkte; content_*: ID der Loesch-Aktion in moderation_actions; account_unbanned: ID des ban-Logs
     created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text('now()'))
 
     # Activity-Liste: nach Empfaenger filtern, nach Zeit sortieren (neueste 30).

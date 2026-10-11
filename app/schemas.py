@@ -315,6 +315,7 @@ class MyModerationActionOut(BaseModel):
     created_at: datetime
     appeal_until: datetime                 # bis dahin liegt der Inhalt im Archiv
     restored: bool                         # ein Admin hat den Inhalt wiederhergestellt
+    lifted_at: Optional[datetime] = None   # nur bei ban: wann die Sperre vorzeitig aufgehoben wurde
 
 
 class RoleUpdate(BaseModel):

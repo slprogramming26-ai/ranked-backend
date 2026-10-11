@@ -234,15 +234,31 @@ def unban_user(id: int, db: Session = Depends(database.get_dp),
 
     target = _get_target_below_me(db, id, current_user)
 
-    if target.banned_until is None:
+    # Eine abgelaufene Sperre behaelt ihr banned_until (niemand raeumt es weg) -> sie
+    # zaehlt trotzdem als "nicht gesperrt", sonst saehe der User ein falsches
+    # "vorzeitig aufgehoben" bei einer Sperre, die laengst regulaer zu Ende war.
+    if target.banned_until is None or target.banned_until <= datetime.now(timezone.utc):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
                             detail="user is not banned")
 
+    # Die laufende Sperre ist immer die NEUESTE ban-Zeile dieses Users.
+    M = models.ModerationAction
+    ban_log = (db.query(M.id)
+               .filter(M.target_user_id == target.id, M.action == "ban")
+               .order_by(M.created_at.desc(), M.id.desc())
+               .first())
+
     # Alte Sperre mitschreiben, BEVOR sie unten geloescht wird — sonst weiss
     # das Log nicht, was eigentlich aufgehoben wurde.
-    _log_action(db, current_user, "unban", target.id,
-                extra={"was_banned_until": target.banned_until.isoformat(),
-                       "ban_reason": target.ban_reason})
+    extra = {"was_banned_until": target.banned_until.isoformat(),
+             "ban_reason": target.ban_reason}
+    if ban_log is not None:
+        # Gleiches Muster wie restored_action_id: zeigt auf die Zeile, die aufgehoben wurde
+        extra["lifted_action_id"] = ban_log.id
+        # payload = ID des BAN-Logs, nicht des unban-Logs: der User sieht in
+        # GET /users/moderation nur den Ban (analog content_restored).
+        db.add(models.Activity(user_id=target.id, type="account_unbanned", payload=ban_log.id))
+    _log_action(db, current_user, "unban", target.id, extra=extra)
 
     target.banned_until = None
     target.ban_reason = None
