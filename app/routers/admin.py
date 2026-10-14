@@ -532,27 +532,39 @@ def remove_profile_picture(id: int, remove: schemas.ContentRemove, db: Session =
 # =========================================================
 
 @router.get("/actions", response_model=List[schemas.ModerationActionOut])
-def list_actions(action: schemas.ModerationActionType = None,
+def list_actions(action: List[schemas.ModerationActionType] = Query(None),
                  moderator_id: int = None, target_user_id: int = None,
                  limit: int = Query(50, ge=1, le=200), skip: int = Query(0, ge=0),
                  db: Session = Depends(database.get_dp),
                  current_user: models.User = Depends(require_admin)):
     """Neueste zuerst. Alle Filter optional und kombinierbar, z.B.
-    ?moderator_id=5 = "was hat Mod 5 gemacht", ?target_user_id=42 = "was lief gegen User 42"."""
+    ?moderator_id=5 = "was hat Mod 5 gemacht", ?target_user_id=42 = "was lief gegen User 42".
+    action darf mehrfach kommen: ?action=delete_post&action=delete_comment = eins davon."""
 
     M = models.ModerationAction
-    # joinedload: Moderator und Ziel-User kommen per JOIN in DERSELBEN Abfrage mit.
-    query = db.query(M).options(joinedload(M.moderator), joinedload(M.target_user))
+    RC = models.RemovedContent
+    # EXISTS als Spalte -> "liegt noch im Archiv?" kommt in DERSELBEN Anweisung mit.
+    # moderation_action_id ist unique -> hat schon einen Index.
+    restorable = db.query(RC.id).filter(RC.moderation_action_id == M.id).exists()
 
-    if action is not None:
-        query = query.filter(M.action == action)
+    # joinedload: Moderator und Ziel-User kommen per JOIN in DERSELBEN Abfrage mit.
+    query = (db.query(M, restorable.label("restorable"))
+             .options(joinedload(M.moderator), joinedload(M.target_user)))
+
+    if action:
+        query = query.filter(M.action.in_(action))
     if moderator_id is not None:
         query = query.filter(M.moderator_id == moderator_id)
     if target_user_id is not None:
         query = query.filter(M.target_user_id == target_user_id)
 
     # id als Gleichstand-Brecher: gleiche created_at -> trotzdem stabile Reihenfolge beim Blaettern.
-    return query.order_by(M.created_at.desc(), M.id.desc()).offset(skip).limit(limit).all()
+    rows = query.order_by(M.created_at.desc(), M.id.desc()).offset(skip).limit(limit).all()
+
+    # restorable ist keine Model-Spalte -> einfach ans Objekt haengen, from_attributes liest es mit.
+    for action_row, is_restorable in rows:
+        action_row.restorable = is_restorable
+    return [action_row for action_row, _ in rows]
 
 
 @router.post("/actions/{action_id}/restore", response_model=schemas.ModerationActionOut)

@@ -299,6 +299,9 @@ class ModerationActionOut(BaseModel):
     reason: Optional[str] = None
     content_snapshot: Optional[str] = None  # None = nie gesetzt oder schon geleert
     extra: Optional[dict] = None
+    # Nur GET /admin/actions rechnet das aus (Archiv-Zeile da = noch nicht wiederhergestellt
+    # und nicht abgelaufen). Ueberall sonst bleibt der Default stehen.
+    restorable: bool = False
 
     model_config = ConfigDict(from_attributes=True)
 
