@@ -65,6 +65,17 @@ class FakeDB:
         self.committed = True
 
 
+@pytest.fixture(autouse=True)
+def redis_calls(monkeypatch):
+    """ban_user/unban_user reden nach dem commit mit Redis (ws:banned, ws:kick).
+    Das waere das ECHTE Redis — und User 2 bist du: jeder Testlauf sperrte dich
+    sonst 35 Minuten aus dem Chat. Deshalb nur mitschreiben, nicht senden."""
+    calls = []
+    monkeypatch.setattr("app.ws.publisher.kick_banned", lambda uid: calls.append(("kick", uid)))
+    monkeypatch.setattr("app.ws.publisher.lift_ban", lambda uid: calls.append(("lift", uid)))
+    return calls
+
+
 def make_user(id, role="user", banned_until=None):
     return models.User(id=id, username=f"u{id}", role=role, banned_until=banned_until,
                        email=f"u{id}@test.de", passwort="x")
@@ -88,8 +99,9 @@ def assert_http(status_code, fn, *args, **kwargs):
 
 # --- Was erlaubt ist --------------------------------------------------------
 
-def test_mod_sperrt_user_7_tage():
+def test_mod_sperrt_user_7_tage(redis_calls):
     result, target, db = do_ban("moderator", days=7)
+    assert redis_calls == [("kick", 2)]
     erwartet = datetime.now(timezone.utc) + timedelta(days=7)
     assert abs(target.banned_until - erwartet) < timedelta(seconds=5)
     assert target.ban_reason == "Spam"
@@ -111,12 +123,13 @@ def test_admin_sperrt_dauerhaft():
     assert db.logged().extra == {"days": None}
 
 
-def test_verbotene_sperre_schreibt_kein_log():
+def test_verbotene_sperre_schreibt_kein_log(redis_calls):
     actor, target = make_user(1, "moderator"), make_user(2, "admin")
     db = FakeDB(target)
     assert_http(403, ban_user, id=2, ban=schemas.BanCreate(days=1, reason="x"),
                 db=db, current_user=actor)
     assert db.added == [] and not db.committed
+    assert redis_calls == []  # kein Rauswurf ohne Sperre
 
 
 def test_admin_sperrt_moderator():
@@ -160,13 +173,14 @@ def test_schema_lehnt_0_tage_ab():
 
 # --- Entsperren -------------------------------------------------------------
 
-def test_unban():
+def test_unban(redis_calls):
     target = make_user(2, banned_until=datetime.now(timezone.utc) + timedelta(days=3))
     target.ban_reason = "Spam"
     db = FakeDB(target)
     unban_user(id=2, db=db, current_user=make_user(1, "moderator"))
     assert target.banned_until is None and target.ban_reason is None
     assert db.committed
+    assert redis_calls == [("lift", 2)]
 
     # Das Log muss die ALTE Sperre kennen, obwohl sie am User schon geloescht ist.
     log = db.logged()
@@ -179,12 +193,13 @@ def test_unban_nicht_gesperrt_400():
                 current_user=make_user(1, "moderator"))
 
 
-def test_unban_abgelaufene_sperre_400():
+def test_unban_abgelaufene_sperre_400(redis_calls):
     # banned_until bleibt nach Ablauf stehen -> darf nicht als "vorzeitig aufgehoben" zaehlen
     target = make_user(2, banned_until=datetime.now(timezone.utc) - timedelta(days=1))
     db = FakeDB(target)
     assert_http(400, unban_user, id=2, db=db, current_user=make_user(1, "moderator"))
     assert db.added == [] and not db.committed
+    assert redis_calls == []
 
 
 # --- Login ------------------------------------------------------------------

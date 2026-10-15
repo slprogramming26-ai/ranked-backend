@@ -24,6 +24,12 @@ post_router.delete_s3_object = lambda url, db: s3_aufrufe.append(("post", url))
 story_router.delete_s3_object = lambda url, db: s3_aufrufe.append(("story", url))
 user_router.delete_s3_object = lambda url, db: s3_aufrufe.append(("user", url))
 
+# Bann/Entbann reden mit dem ECHTEN Redis (ws:banned, ws:kick) — das rollt der
+# Rollback nicht zurueck. Also stilllegen, sonst fliegen echte Accounts aus dem Chat.
+from app.ws import publisher  # noqa: E402
+publisher.kick_banned = lambda user_id: None
+publisher.lift_ban = lambda user_id: None
+
 from app.routers import admin  # noqa: E402  (erst NACH den Spionen)
 
 FAKE_URL = "https://example.invalid/kein-bucket/test.jpg"

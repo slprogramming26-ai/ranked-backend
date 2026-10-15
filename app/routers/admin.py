@@ -6,6 +6,7 @@ from sqlalchemy.dialects.postgresql import aggregate_order_by
 from sqlalchemy.orm import Session, joinedload
 from .. import schemas, database, models, oauth2
 from .story import STORY_LIFETIME
+from ..ws import publisher
 
 # EIN Objekt fuer Router-Ebene UND Routen-Parameter: FastAPI fuehrt dieselbe
 # Dependency pro Request nur einmal aus. Zwei getrennte require_role("moderator")-
@@ -225,6 +226,10 @@ def ban_user(id: int, ban: schemas.BanCreate, db: Session = Depends(database.get
                 extra={"days": ban.days})
     db.commit()
 
+    # Erst NACH dem commit: scheitert der, darf niemand rausfliegen.
+    # Das Go-Gateway prueft Tokens ohne DB, sieht die Sperre also sonst nicht.
+    publisher.kick_banned(target.id)
+
     return {"user_id": target.id, "banned_until": target.banned_until, "ban_reason": target.ban_reason}
 
 
@@ -263,6 +268,8 @@ def unban_user(id: int, db: Session = Depends(database.get_dp),
     target.banned_until = None
     target.ban_reason = None
     db.commit()
+
+    publisher.lift_ban(target.id)
 
     return {"user_id": target.id, "banned_until": None, "ban_reason": None}
 

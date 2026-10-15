@@ -19,6 +19,12 @@ from app import models, schemas  # noqa: E402
 from app.database import engine  # noqa: E402
 from app.routers.admin import ban_user, unban_user  # noqa: E402
 from app.routers.user import get_my_moderation  # noqa: E402
+from app.ws import publisher  # noqa: E402
+
+# Bann/Entbann reden mit dem ECHTEN Redis (ws:banned, ws:kick) — das rollt der
+# Rollback nicht zurueck. Also stilllegen, sonst fliegen echte Accounts aus dem Chat.
+publisher.kick_banned = lambda user_id: None
+publisher.lift_ban = lambda user_id: None
 
 fehler = 0
 

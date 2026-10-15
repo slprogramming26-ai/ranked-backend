@@ -1,6 +1,6 @@
 # Chat-Protokoll: Flutter ⇄ ws-gateway (Go) ⇄ Backend (Python)
 
-**Stand:** 2026-09-04 · **`protocol_version`: 1**
+**Stand:** 2026-10-15 · **`protocol_version`: 1**
 
 Diese Datei liegt **wortgleich in beiden Repos** (`ranked_backend_api` und `ws-gateway`).
 Ändert sich hier etwas, ändert es sich in beiden — sonst driften die Repos auseinander,
@@ -29,7 +29,7 @@ kennen, leben dieselben Regeln in zwei Sprachen und müssen zweimal gepflegt wer
    Client   ◄────────────────────      ◄────────────────────────────
                  A: WebSocket                   Antwort 1:1 zurück
                                                                         │
-                       C: Redis Pub/Sub  "ws:push"                      │
+                       C: Redis Pub/Sub  "ws:push" + "ws:kick"          │
                 Go  ◄───────────────────────────────────────────────────┘
                                 (nur abwärts)
 ```
@@ -79,6 +79,22 @@ gleichnamigen Claim.
 > über. Ein gültig signierter, nicht abgelaufener Token ist Beweis genug.
 
 Ungültiger oder abgelaufener Token → Socket schließen mit **1008** (Policy Violation).
+
+Danach prüft Go den **Sperr-Riegel** `ws:banned:{user_id}` in Redis (ein `EXISTS`, ~1 ms,
+weiterhin keine DB). Steht er → Socket schließen mit **4003** `"account suspended"`.
+Nötig, weil ein gesperrter Nutzer sein Access Token noch bis zu 30 min behält und sich
+sonst sofort neu verbinden könnte (siehe § 6.3). Ist Redis gestört, lässt Go durch
+(**fail-open**, mit Log-Zeile): ein Redis-Ausfall soll nicht alle Nutzer aussperren.
+
+Close-Codes, auf die der Client reagieren muss:
+
+| Code | Grund | Was der Client tut |
+|---|---|---|
+| **1008** | `invalid token` | Token erneuern (`/refresh`), dann neu verbinden. |
+| **4003** | `account suspended` | **Nicht** neu verbinden. Sperr-Screen zeigen. Ein Reconnect würde wieder mit 4003 enden, und `/refresh` liefert 401 (Refresh Tokens werden beim Bann gelöscht). |
+
+4003 kommt in zwei Fällen: beim Verbindungsaufbau (Riegel steht) und **mitten in einer
+offenen Verbindung** (Rauswurf über `ws:kick`).
 
 ### 4.2 Client → Go
 
@@ -231,6 +247,35 @@ das wird erst bei ~20–50 Instanzen zum Thema. Der Umstieg auf `ws:inst:{id}` s
 drei Änderungen (Presence gibt die `instance_id` zurück, Publisher gruppiert danach, Go
 abonniert seinen eigenen Kanal) — rein serverintern, **Flutter merkt nichts.** Deshalb wird
 die `instance_id` ab Tag eins mitgeschrieben, auch wenn Python sie heute wegwirft.
+
+### 6.3 Rauswurf gesperrter Nutzer: `ws:kick` + `ws:banned:{user_id}`
+
+**Kanal:** `ws:kick` (global, alle Instanzen lauschen; dasselbe Abo wie `ws:push`)
+
+```jsonc
+{ "protocol_version": 1, "user_id": 14 }
+```
+
+Anders als bei `ws:push` öffnet Go diesen Umschlag **selbst**: es ist ein Befehl an Go, keine
+Payload für den Client. Go schließt alle *lokalen* Sockets dieser `user_id` mit **4003**
+`"account suspended"`; nicht gefunden → nichts tun (andere Instanz oder offline).
+
+Dazu gehört der **Riegel**, der das Neuverbinden verhindert (§ 4.1):
+
+| Wer | Was |
+|---|---|
+| Python, Bann (nach dem commit) | erst `SETEX ws:banned:{user_id} {Token-Laufzeit + 300} 1`, **dann** `PUBLISH ws:kick` |
+| Python, Entsperren (nach dem commit) | `DEL ws:banned:{user_id}` |
+| Go, Verbindungsaufbau | `EXISTS ws:banned:{user_id}` → 4003 |
+
+- **Reihenfolge Riegel vor Kick:** andersherum könnte der Client in der Lücke neu verbinden
+  und wäre wieder drin.
+- **TTL = Access-Token-Laufzeit + 5 min Puffer:** länger kann ein Gesperrter kein gültiges
+  Token haben; ein neues bekommt er nicht (Refresh Tokens gelöscht). Danach blockt schon
+  die Token-Prüfung, der Riegel darf verfallen.
+- **Verlust:** Die Sperre selbst steht in Postgres und gilt für die REST-API immer. Scheitert
+  der Publish, bleibt ein offener Socket offen, bis er von selbst abreißt. Bekannte,
+  akzeptierte Restlücke: Python prüft auf Strecke B (noch) nicht, ob der Sender gesperrt ist.
 
 ---
 
