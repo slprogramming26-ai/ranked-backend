@@ -58,6 +58,8 @@ class User(Base):
     role = Column(Enum("user", "moderator", "admin", name="user_roles"), nullable=False, server_default="user")
     banned_until = Column(TIMESTAMP(timezone=True), nullable=True)
     ban_reason = Column(String, nullable=True)
+    email_verified = Column(Boolean, nullable=False, server_default='false')
+
 
 
 class FailedImageDeletions(Base):
@@ -70,7 +72,20 @@ class FailedImageDeletions(Base):
     created_at = Column(TIMESTAMP(timezone=True), nullable= False, server_default= text('now()'))
 
 
+class EmailCode(Base):
+    __tablename__ = 'email_codes'
 
+    id = Column(Integer, primary_key=True, nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    purpose = Column(Enum("verify", "reset", name="email_code_purpose"), nullable=False)
+    code_hash = Column(String, nullable=False)
+    attempts = Column(Integer, nullable=False, server_default=text('0'))
+    expires_at = Column(TIMESTAMP(timezone=True), nullable=False)
+    created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text('now()'))
+
+    __table_args__ = (
+        UniqueConstraint('user_id', 'purpose'),
+    )
 
 
 

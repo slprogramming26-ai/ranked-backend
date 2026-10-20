@@ -1,8 +1,14 @@
 from datetime import datetime
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
-from typing import Optional, Literal, List
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator, field_validator, BeforeValidator
+from typing import Optional, Literal, List, Annotated
 
 
+def _normalize_email(value):
+    if isinstance(value, str):
+        return value.strip().lower()
+    return value
+
+NormalizedEmail = Annotated[EmailStr, BeforeValidator(_normalize_email)]
 
 
 # =========================================================
@@ -37,10 +43,12 @@ class UserOut(BaseModel):
 
 
 class UserCreate(BaseModel):
-    email: EmailStr
+    email: NormalizedEmail
     username: str
     passwort: str
     age: int = Field(ge=0, le=120)
+
+
 
 
 class UserDetails(BaseModel):
@@ -99,8 +107,19 @@ class BlockedUserOut(BaseModel):
 
 
 class UserLogin(BaseModel):
-    email: EmailStr
+    email: NormalizedEmail
     passwort: str
+
+
+
+class EmailVerify(BaseModel):
+    email: NormalizedEmail
+    code: str = Field(pattern=r"^\d{6}$")
+
+
+class EmailResend(BaseModel):
+    email: NormalizedEmail
+
 
 
 class Token(BaseModel):
@@ -134,6 +153,13 @@ class PostCreate(PostBase):
     image_url: Optional[str] = None
     flag: Optional[Literal["engagement", "creativity", "productivity"]] = None
     location_id: Optional[int] = None
+
+    # Gilt für Erstellen (POST) und Bearbeiten (PUT): mindestens Titel, Text oder Bild
+    @model_validator(mode="after")
+    def not_empty(self):
+        if not self.title.strip() and not self.content.strip() and not self.image_url:
+            raise ValueError("Post must have a title, content or image")
+        return self
 
 
 class Post(PostBase):
