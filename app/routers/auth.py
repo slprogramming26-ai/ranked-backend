@@ -33,6 +33,15 @@ def login(request: Request, user_credentials: OAuth2PasswordRequestForm = Depend
     # dass es zu dieser E-Mail einen (gesperrten) Account gibt.
     oauth2.check_not_banned(user)
 
+        # Auch erst nach der Passwort-Pruefung: sonst koennte jeder testen,
+    # ob eine E-Mail registriert, aber noch nicht bestaetigt ist.
+    if not user.email_verified:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"code": "email_not_verified"}
+        )
+
+
     access_token = oauth2.create_access_token(data={"user_id": str(user.id)})
 
     # Langlebiger Refresh Token 

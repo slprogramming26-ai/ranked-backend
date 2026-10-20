@@ -1,4 +1,5 @@
-"""Prueft POST /users/verify und POST /users/verify/resend gegen einen laufenden Server.
+"""Prueft POST /users/verify, POST /users/verify/resend und die Login-Sperre fuer
+unbestaetigte Accounts gegen einen laufenden Server.
 
 Legt per POST /users/ einen frischen Wegwerf-User an (verify_test_<zufall>@example.com)
 und loescht ihn am Ende wieder (CASCADE nimmt email_codes + refresh_tokens mit).
@@ -10,8 +11,8 @@ attempts bzw. expires_at von Hand. Andere User werden nicht angefasst.
 
 Achtung: .env zeigt auf Supabase -> der Test-User landet kurz in der Prod-DB.
 
-Rate-Limits (pro IP): register 5/Minute, verify 10/Minute, resend 3/Minute.
-Ein Lauf braucht 1x register + 8x verify + 4x resend; vor dem letzten resend
+Rate-Limits (pro IP): register 5/Minute, login 5/Minute, verify 10/Minute, resend 3/Minute.
+Ein Lauf braucht 1x register + 3x login + 8x verify + 4x resend; vor dem letzten resend
 wartet das Skript selbst 61 s. Zwischen zwei Laeufen ~1 Minute warten.
 
 Start:
@@ -42,6 +43,7 @@ WRONG_CODE = "000000"
 tag = secrets.token_hex(4)
 EMAIL = f"verify_test_{tag}@example.com"
 USERNAME = f"verify_test_{tag}"
+PASSWORT = "test-pw-123"
 
 ergebnisse: list[bool] = []
 
@@ -69,10 +71,14 @@ def resend(email: str) -> httpx.Response:
     return c.post("/users/verify/resend", json={"email": email})
 
 
+def login(email: str, passwort: str) -> httpx.Response:
+    return c.post("/login", data={"username": email, "password": passwort})
+
+
 c = httpx.Client(base_url=BASE, timeout=15)
 print(f"Ziel: {BASE}  (Test-User {EMAIL})\n")
 
-r = c.post("/users/", json={"email": EMAIL, "username": USERNAME, "passwort": "test-pw-123", "age": 20})
+r = c.post("/users/", json={"email": EMAIL, "username": USERNAME, "passwort": PASSWORT, "age": 20})
 if r.status_code != 201:
     print(f"Registrierung fehlgeschlagen: {r.status_code} {r.text}")
     sys.exit(1)
@@ -83,6 +89,19 @@ try:
     # Bekannten Code einsetzen (ersetzt den zufaelligen aus der Mail).
     db_exec("UPDATE email_codes SET code_hash = :h WHERE user_id = :uid AND purpose = 'verify'",
             h=utils.hash_code(KNOWN_CODE), uid=user_id)
+
+    # --- Login vor der Bestaetigung ---
+    r = login(EMAIL, "falsches-pw")
+    pruefe("L1 unbestaetigt + falsches Passwort -> 401 (verraet nichts)",
+           r.status_code == 401, f"{r.status_code} {r.json().get('detail')}")
+
+    r = login(EMAIL, PASSWORT)
+    detail = r.json().get("detail")
+    pruefe("L2 unbestaetigt + richtiges Passwort -> 403 email_not_verified",
+           r.status_code == 403 and isinstance(detail, dict) and detail.get("code") == "email_not_verified",
+           f"{r.status_code} {detail}")
+    rt = db_row("SELECT count(*) AS n FROM refresh_tokens WHERE user_id = :uid", uid=user_id)
+    pruefe("L2b dabei kein Refresh-Token angelegt", rt.n == 0, f"{rt.n} Zeile(n)")
 
     r = verify(EMAIL, "12a456")
     pruefe("1 Code-Format falsch -> 422", r.status_code == 422, str(r.status_code))
@@ -157,6 +176,10 @@ try:
     if body.get("access_token"):
         r = c.get("/users/", headers={"Authorization": f"Bearer {body['access_token']}"})
         pruefe("6e Access-Token funktioniert (GET /users/)", r.status_code == 200, str(r.status_code))
+
+    r = login(EMAIL, PASSWORT)
+    pruefe("L3 Login nach Bestaetigung -> 200 mit Tokens",
+           r.status_code == 200 and "access_token" in r.json(), str(r.status_code))
 
     r = verify(EMAIL, KNOWN_CODE)
     pruefe("7 nochmal verify -> 409", r.status_code == 409, f"{r.status_code} {r.json().get('detail')}")
