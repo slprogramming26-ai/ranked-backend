@@ -2,14 +2,13 @@ from fastapi import FastAPI, Response, status, HTTPException, Depends, APIRouter
 from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session, aliased
 from typing import List, Optional
-from datetime import timedelta, datetime, timezone
+from datetime import timedelta
 from PIL import Image
 import io
 import boto3
 from ..config import settings
 import uuid
 from sqlalchemy import func
-from sqlalchemy.dialects.postgresql import insert as pg_insert
 from .. import models, schemas, oauth2,utils
 from ..database import get_dp
 from ..xp_config import get_league, get_effective_streak
@@ -17,6 +16,8 @@ from .post import delete_s3_object as delete_post_image
 from .story import delete_s3_object as delete_story_image
 from ..limiter import limiter        # oben dazu
 from ..mail import send_mail
+from .account import issue_email_code
+
 
 
 
@@ -149,37 +150,6 @@ async def upload_user_image(
     
 
 
-EMAIL_CODE_LIFETIME = timedelta(minutes=15)
-EMAIL_CODE_MAX_ATTEMPTS = 5
-EMAIL_CODE_RESEND_COOLDOWN = timedelta(seconds=60)
-
-
-
-def issue_email_code(db: Session, user_id: int, purpose: str) -> str:
-    # Legt den Code an oder überschreibt den alten (ein Code pro User + Zweck).
-    # Kein commit hier: der Aufrufer committet, damit alles in EINER Transaktion landet.
-    code = utils.generate_code()
-    now = datetime.now(timezone.utc)
-
-    stmt = pg_insert(models.EmailCode).values(
-        user_id=user_id,
-        purpose=purpose,
-        code_hash=utils.hash_code(code),
-        attempts=0,
-        expires_at=now + EMAIL_CODE_LIFETIME,
-        created_at=now,
-    )
-    stmt = stmt.on_conflict_do_update(
-        index_elements=["user_id", "purpose"],
-        set_={
-            "code_hash": stmt.excluded.code_hash,
-            "attempts": 0,
-            "expires_at": stmt.excluded.expires_at,
-            "created_at": stmt.excluded.created_at,
-        },
-    )
-    db.execute(stmt)
-    return code
 
 
 
@@ -223,91 +193,7 @@ def create_user(request: Request, user: schemas.UserCreate, background_tasks: Ba
     )
     return new_user
 
-@router.post("/verify", response_model=schemas.Token)
-@limiter.limit("10/minute")
-def verify_email(request: Request, data: schemas.EmailVerify, db: Session = Depends(get_dp)):
 
-    invalid = HTTPException(
-        status_code=status.HTTP_400_BAD_REQUEST,
-        detail="Code ungültig oder abgelaufen."
-    )
-
-    user = db.query(models.User).filter(models.User.email == data.email).first()
-    if not user:
-        raise invalid
-
-    if user.email_verified:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="E-Mail ist bereits bestätigt."
-        )
-
-    email_code = db.query(models.EmailCode).filter(
-        models.EmailCode.user_id == user.id,
-        models.EmailCode.purpose == "verify",
-    ).with_for_update().first()
-    if not email_code:
-        raise invalid
-
-    if email_code.expires_at < datetime.now(timezone.utc):
-        raise invalid
-
-    if email_code.attempts >= EMAIL_CODE_MAX_ATTEMPTS:
-        raise invalid
-
-    if not utils.verify_code(data.code, email_code.code_hash):
-        email_code.attempts += 1
-        db.commit()
-        raise invalid
-
-
-
-    oauth2.check_not_banned(user)
-
-    user.email_verified = True
-    db.delete(email_code)
-
-
-    access_token = oauth2.create_access_token(data={"user_id": str(user.id)})
-        
-    # create_refresh_token committet -> email_verified + Code-Löschung landen mit drin
-    refresh_token = oauth2.create_refresh_token(user_id=user.id, db=db)
-        
-    return {"access_token": access_token,
-                "refresh_token": refresh_token,
-                "token_type": "bearer"
-        }
-
-
-@router.post("/verify/resend", status_code=status.HTTP_204_NO_CONTENT)
-@limiter.limit("3/minute")
-def resend_verification(request: Request, data: schemas.EmailResend, background_tasks: BackgroundTasks, db: Session = Depends(get_dp)):
-
-    user = db.query(models.User).filter(models.User.email == data.email).first()
-    if not user or user.email_verified:
-        return Response(status_code=status.HTTP_204_NO_CONTENT)
-
-    email_code = db.query(models.EmailCode).filter(
-        models.EmailCode.user_id == user.id,
-        models.EmailCode.purpose == "verify",
-    ).first()
-
-    if email_code and email_code.created_at > datetime.now(timezone.utc) - EMAIL_CODE_RESEND_COOLDOWN:
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="Bitte warte kurz, bevor du einen neuen Code anforderst."
-        )
-
-    code = issue_email_code(db, user.id, "verify")
-    db.commit()
-
-    background_tasks.add_task(
-        send_mail,
-        user.email,
-        "Dein Ranked-Code",
-        f"Dein Bestätigungscode: {code}\nEr ist 15 Minuten gültig.",
-    )
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 

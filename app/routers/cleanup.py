@@ -107,3 +107,36 @@ def clear_removed_content(
 
     db.commit()
     return {"deleted": deleted}
+
+
+UNVERIFIED_ACCOUNT_LIFETIME = timedelta(hours=24)
+
+
+@router.delete("/unverified_users")
+def delete_unverified_users(
+    db: Session = Depends(get_dp),
+    x_cleanup_secret: Optional[str] = Header(default=None),
+):
+    """Loescht Accounts, die ihre E-Mail nach 24 h nicht bestaetigt haben -> fremde oder
+    vertippte Adressen werden wieder frei. Wird 1x täglich vom externen Scheduler aufgerufen."""
+    if x_cleanup_secret != settings.story_cleanup_secret:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid cleanup secret")
+
+    U = models.User
+    EC = models.EmailCode
+    # Laeuft noch ein Code (verify ODER reset), tippt der User evtl. gerade -> verschonen.
+    has_valid_code = db.query(EC.id).filter(
+        EC.user_id == U.id,
+        EC.expires_at > func.now(),
+    ).exists()
+
+    # EIN DELETE; CASCADE nimmt email_codes + refresh_tokens mit. Unbestaetigte koennen
+    # sich nicht einloggen -> keine Bilder auf S3, die vorher weg muessten.
+    deleted = db.query(U).filter(
+        U.email_verified.is_(False),
+        U.created_at < func.now() - UNVERIFIED_ACCOUNT_LIFETIME,
+        ~has_valid_code,
+    ).delete(synchronize_session=False)
+
+    db.commit()
+    return {"deleted": deleted}
