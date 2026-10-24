@@ -396,9 +396,10 @@ def upgrade_user(user_details: schemas.UserDetails,current_user: int = Depends(o
     return {"status": "success", "updated_fields": list(update_data.keys())}
 
 
-@router.delete("/", status_code=status.HTTP_204_NO_CONTENT)
-def delete_account(current_user = Depends(oauth2.get_current_user),
-                   db: Session = Depends(get_dp)):
+def _delete_user_data(current_user: models.User, db: Session):
+    # Gemeinsame Lösch-Logik für DELETE /users/ (eingeloggt) und POST /users/delete
+    # (E-Mail + Passwort, auch für Gesperrte). Kein commit hier: der Aufrufer committet.
+
     # 1. Bilder ALLER Posts des Users einsammeln und aus S3 löschen
     posts = db.query(models.Post).filter(models.Post.owner_id == current_user.id).all()
     for post in posts:
@@ -448,8 +449,39 @@ def delete_account(current_user = Depends(oauth2.get_current_user),
     # 4. User aus DB löschen -> CASCADE räumt posts/votes/comments automatisch auf
     db.query(models.User).filter(models.User.id == current_user.id) \
         .delete(synchronize_session=False)
+
+
+@router.delete("/", status_code=status.HTTP_204_NO_CONTENT)
+def delete_account(current_user = Depends(oauth2.get_current_user),
+                   db: Session = Depends(get_dp)):
+    _delete_user_data(current_user, db)
     db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/delete", status_code=status.HTTP_200_OK, response_model=schemas.AccountDeleted)
+@limiter.limit("5/minute")
+def delete_account_with_password(request: Request, credentials: schemas.UserLogin,
+                                 db: Session = Depends(get_dp)):
+    # Für Gesperrte: Bann löscht die Refresh-Tokens und /login wirft 403, also kommen
+    # sie nie an DELETE /users/. Löschen muss trotzdem gehen (DSGVO Art. 17, App-Stores).
+    # Deshalb wie /login nur E-Mail + Passwort prüfen — bewusst OHNE check_not_banned
+    # und ohne email_verified-Prüfung.
+    user = db.query(models.User).filter(models.User.email == credentials.email).first()
+
+    # Gleiche Meldung für "gibt's nicht" und "falsches Passwort" -> verrät keine E-Mails
+    if not user or not utils.verify_password(credentials.passwort, user.passwort):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="invalid credentials"
+        )
+
+    # ID VOR dem Löschen merken: nach delete + commit ist das Objekt expired und
+    # user.id würde nachladen wollen -> knallt, weil die Zeile weg ist
+    user_id = user.id
+    _delete_user_data(user, db)
+    db.commit()
+    return {"user_id": user_id}
 
 
 

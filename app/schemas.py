@@ -45,7 +45,7 @@ class UserOut(BaseModel):
 class UserCreate(BaseModel):
     email: NormalizedEmail
     username: str
-    passwort: str
+    passwort: str = Field(min_length=8, max_length=128)
     age: int = Field(ge=0, le=120)
 
 
@@ -104,6 +104,12 @@ class BlockedUserOut(BaseModel):
     username: str
     profile_picture_url: Optional[str] = None
     blocked_at: datetime
+
+
+class AccountDeleted(BaseModel):
+    """Antwort von POST /users/delete. Die App hat ohne Token keine userId, braucht
+    sie aber, um gezielt die lokalen E2EE-Keys (e2ee_priv_<userId>) zu löschen."""
+    user_id: int
 
 
 class UserLogin(BaseModel):
