@@ -581,6 +581,11 @@ class ChatAck(BaseModel):
     delivered_live: int
 
 
+class GroupChatCreate(BaseModel):
+    # Optionaler Body bei POST /group_chat/create: Erstellen + Benennen in einem Request.
+    group_name: Optional[str] = None
+
+
 class GroupChatUpdate(BaseModel):
     # profile_picture bewusst NICHT hier: Bilder nur über POST /group_chat/{id}/picture,
     # damit nur eigene Supabase-URLs in der DB landen und das alte Bild gelöscht wird.
@@ -601,6 +606,12 @@ class GroupMemberOut(BaseModel):
     user_id: int
     username: str
     profile_picture_url: Optional[str] = None
+    role: Literal["creator", "admin", "member"]
+
+
+class GroupMemberRoleUpdate(BaseModel):
+    # 'creator' bewusst NICHT erlaubt: Gründer wird man nur über /transfer.
+    role: Literal["admin", "member"]
 
 class GroupChatJoinCodeOut(BaseModel):
 

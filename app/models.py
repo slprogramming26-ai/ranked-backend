@@ -237,6 +237,13 @@ class GroupChatMembership(Base):
     # index=True: "meine Gruppen" sucht nach participant_id (zweite PK-Spalte) -> eigener Index.
     participant_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, primary_key=True, index=True)
     joined_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text('now()'))
+    # Gründer steht NICHT hier, sondern in GroupChats.creator_id. Seine eigene
+    # Zeile hat zwar auch eine role, die wird aber ignoriert.
+    role = Column(String, nullable=False, server_default='member')
+
+    __table_args__ = (
+        CheckConstraint("role IN ('member', 'admin')", name="ck_group_chat_memberships_role"),
+    )
 
 
 class GroupMessage(Base):

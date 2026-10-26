@@ -408,20 +408,44 @@ def _delete_user_data(current_user: models.User, db: Session):
     # 2. Profilbild löschen
     delete_s3_object(current_user.profile_picture_url, db)
 
-    # 2b. Story-Bilder + Bilder der selbst erstellten Gruppen löschen.
+    # 2b. Story-Bilder löschen.
     # CASCADE räumt nur die Zeilen weg, danach findet kein Cleanup die Dateien mehr.
     stories = db.query(models.Story.image_url).filter(models.Story.owner_id == current_user.id).all()
     for story in stories:
         delete_story_image(story.image_url, db)
 
-    groups = db.query(models.GroupChats.profile_picture).filter(
+    # 2c. In ALLEN Gruppen des Users fällt er per CASCADE raus -> überall neuer Schlüssel.
+    # Eine Anweisung für alle Gruppen, egal ob Gründer oder Mitglied.
+    my_group_ids = db.query(models.GroupChatMembership.group_chat_id).filter(
+        models.GroupChatMembership.participant_id == current_user.id,
+    )
+    db.query(models.GroupChats).filter(
+        models.GroupChats.group_chat_id.in_(my_group_ids),
+    ).update({"needs_rekey": True}, synchronize_session=False)
+
+    # 2d. Selbst erstellte Gruppen: an Nachfolger übergeben statt mitlöschen.
+    groups = db.query(models.GroupChats).filter(
         models.GroupChats.creator_id == current_user.id,
-        models.GroupChats.profile_picture.isnot(None),
     ).all()
     for group in groups:
-        delete_s3_object(group.profile_picture, db)
+        # Nachfolger: ältester Admin, sonst ältestes Mitglied. Der Gründer selbst ist ausgenommen.
+        successor = db.query(models.GroupChatMembership).filter(
+            models.GroupChatMembership.group_chat_id == group.group_chat_id,
+            models.GroupChatMembership.participant_id != current_user.id,
+        ).order_by(
+            (models.GroupChatMembership.role == "admin").desc(),
+            models.GroupChatMembership.joined_at.asc(),
+        ).first()
 
-    # 2c. Bilder im Moderations-Archiv: CASCADE raeumt removed_content weg, und der
+        if successor:
+            group.creator_id = successor.participant_id
+            successor.role = "admin"
+        else:
+            # Niemand mehr drin -> Gruppe stirbt per CASCADE mit dem User. Das Bild in S3
+            # findet danach niemand mehr, also jetzt löschen.
+            delete_s3_object(group.profile_picture, db)
+
+    # 2e. Bilder im Moderations-Archiv: CASCADE raeumt removed_content weg, und der
     # Cleanup-Cron findet die Dateien nur ueber diese Zeilen -> jetzt oder nie.
     RC = models.RemovedContent
     archived = db.query(RC.target_type, RC.image_url).filter(

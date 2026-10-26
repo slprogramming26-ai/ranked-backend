@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, status, HTTPException, Response, Header, UploadFile, File
 from fastapi.concurrency import run_in_threadpool
 from fastapi.security.oauth2 import OAuth2PasswordRequestForm
+from sqlalchemy import and_
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from .. import database, schemas, models, utils, oauth2
@@ -29,27 +30,65 @@ router = APIRouter(tags=["GroupChat"])
 
 CODE_LIFETIME = timedelta(days=1)
 
+
+def _get_group_and_membership(db: Session, group_chat_id: int, user_id: int):
+    """Gruppe + Mitgliedschaft von user_id in EINER Abfrage (statt zwei Rundwegen).
+    404, wenn die Gruppe nicht existiert. membership ist None, wenn user_id kein
+    Mitglied ist -> was dann passiert (403/404), entscheidet die Route."""
+    row = db.query(models.GroupChats, models.GroupChatMembership).outerjoin(
+        models.GroupChatMembership,
+        and_(
+            models.GroupChatMembership.group_chat_id == models.GroupChats.group_chat_id,
+            models.GroupChatMembership.participant_id == user_id,
+        ),
+    ).filter(
+        models.GroupChats.group_chat_id == group_chat_id,
+    ).first()
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"group chat {group_chat_id} not found")
+    return row  # (group, membership)
+
+
+def _get_membership(db: Session, group_chat_id: int, user_id: int):
+    """Mitgliedschaft eines anderen Users (Ziel von kick/role/transfer) oder None."""
+    return db.query(models.GroupChatMembership).filter(
+        models.GroupChatMembership.group_chat_id == group_chat_id,
+        models.GroupChatMembership.participant_id == user_id,
+    ).first()
+
+
+def _effective_role(group, membership) -> Optional[str]:
+    """'creator' | 'admin' | 'member', None für Nicht-Mitglieder.
+    creator_id wird ZUERST geprüft -> die role-Zeile des Gründers wird ignoriert."""
+    if membership is None:
+        return None
+    if membership.participant_id == group.creator_id:
+        return "creator"
+    return membership.role
+
 #crud for groups
 
 @router.post("/group_chat/create", status_code=status.HTTP_201_CREATED)
 def create_group_chat(
+    group_create: Optional[schemas.GroupChatCreate] = None,  # ohne Body -> None (wie bisher)
     db: Session = Depends(get_dp),
     current_user=Depends(oauth2.get_current_user),
 ):
-    group = models.GroupChats(creator_id=current_user.id)
+    group_name = group_create.group_name if group_create else None
+    group = models.GroupChats(creator_id=current_user.id, group_name=group_name)
     db.add(group)
-    db.commit()
-    db.refresh(group)
-
-
+    # flush statt commit: schickt das INSERT ab (-> group_chat_id ist da), aber
+    # die Transaktion bleibt offen. Gruppe + Mitgliedschaft landen zusammen oder gar nicht.
+    db.flush()
+    group_chat_id = group.group_chat_id
 
     db.add(models.GroupChatMembership(
-        group_chat_id=group.group_chat_id,
+        group_chat_id=group_chat_id,
         participant_id=current_user.id,
     ))
     db.commit()
 
-    return {"group_chat_id": group.group_chat_id}
+    return {"group_chat_id": group_chat_id}
 
 
 @router.post("/group_chat/group_chat_join_code/{group_chat_id}", status_code=status.HTTP_201_CREATED, response_model=schemas.GroupChatJoinCodeOut)
@@ -134,29 +173,18 @@ def leave_group_chat(
     db: Session = Depends(get_dp),
     current_user=Depends(oauth2.get_current_user),
 ):
-    group = db.query(models.GroupChats).filter(
-        models.GroupChats.group_chat_id == group_chat_id,
-    ).first()
-    if not group:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"group chat {group_chat_id} not found")
+    group, membership = _get_group_and_membership(db, group_chat_id, current_user.id)
 
     if group.creator_id == current_user.id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="creator cannot leave; delete the group instead",
+            detail="creator cannot leave; transfer the group to another member first",
         )
 
-    membership = db.query(models.GroupChatMembership).filter(
-        models.GroupChatMembership.group_chat_id == group_chat_id,
-        models.GroupChatMembership.participant_id == current_user.id,
-    ).first()
     if not membership:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not a member of this group")
 
-    db.query(models.GroupChats).filter(
-        models.GroupChats.group_chat_id == group_chat_id,
-    ).update({"needs_rekey": True})
-
+    group.needs_rekey = True
     db.delete(membership)
     db.commit()
     return {"message": "left"}
@@ -185,39 +213,106 @@ def kick_from_group(group_chat_id: int,
     db: Session = Depends(get_dp),
     current_user=Depends(oauth2.get_current_user),):
 
-    group = db.query(models.GroupChats).filter(
-        models.GroupChats.group_chat_id == group_chat_id,
-    ).first()
-    if not group:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"group chat {group_chat_id} not found")
-    
-    if group.creator_id != current_user.id:
+    group, membership = _get_group_and_membership(db, group_chat_id, current_user.id)
+    my_role = _effective_role(group, membership)
+    if my_role not in ("creator", "admin"):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-                             detail="You are not allowed to perform this action")
+            detail="You are not allowed to perform this action")
 
-    # Creator kann sich nicht selbst kicken -> sonst bliebe creator_id ohne Mitgliedschaft.
     if user_id == group.creator_id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="the creator cannot be kicked; delete the group instead")
+            detail="the creator cannot be kicked")
 
-    member = db.query(models.GroupChatMembership
-                      ).filter(models.GroupChatMembership.group_chat_id == group_chat_id,
-                               models.GroupChatMembership.participant_id == user_id).first()
-    
-    if not member:
+    target = _get_membership(db, group_chat_id, user_id)
+    if not target:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-              detail=f"user with id: {user_id} does not exist in this group")
+            detail=f"user with id: {user_id} does not exist in this group")
 
-    
-    db.query(models.GroupChats).filter(
-        models.GroupChats.group_chat_id == group_chat_id,
-    ).update({"needs_rekey": True})
-    db.delete(member)
+    # Admins dürfen nur normale Mitglieder rauswerfen (keine Admins, auch nicht sich selbst).
+    if my_role == "admin" and target.role != "member":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="admins can only kick members")
+
+    group.needs_rekey = True
+    db.delete(target)
     db.commit()
     return {"message": f"user with id {user_id} successfully kicked"}
+
+
+@router.patch("/group_chat/{group_chat_id}/members/{user_id}/role")
+def change_member_role(
+    group_chat_id: int,
+    user_id: int,
+    role_update: schemas.GroupMemberRoleUpdate,
+    db: Session = Depends(get_dp),
+    current_user=Depends(oauth2.get_current_user),
+):
+    group, membership = _get_group_and_membership(db, group_chat_id, current_user.id)
+    my_role = _effective_role(group, membership)
+    if my_role not in ("creator", "admin"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You are not allowed to perform this action")
+
+    # Gründer wechselt nur über /transfer, nicht über die Rolle.
+    if user_id == group.creator_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="the creator's role cannot be changed")
+
+    target = _get_membership(db, group_chat_id, user_id)
+    if not target:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"user with id: {user_id} does not exist in this group")
+
+    # Befördern dürfen Gründer + Admins, degradieren nur der Gründer.
+    if role_update.role == "member" and my_role != "creator":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="only the creator can demote admins")
+
+    # Ist die Rolle schon gesetzt, ändert sich nichts -> trotzdem 200.
+    target.role = role_update.role
+    db.commit()
+    return {"user_id": user_id, "role": role_update.role}
+
+
+@router.post("/group_chat/{group_chat_id}/transfer/{user_id}")
+def transfer_group(
+    group_chat_id: int,
+    user_id: int,
+    db: Session = Depends(get_dp),
+    current_user=Depends(oauth2.get_current_user),
+):
+    group, membership = _get_group_and_membership(db, group_chat_id, current_user.id)
+    if group.creator_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="only the creator can transfer the group")
+
+    if user_id == current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="you are already the creator")
+
+    target = _get_membership(db, group_chat_id, user_id)
+    if not target:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"user with id: {user_id} does not exist in this group")
+
+    # Beide Änderungen landen in EINEM commit -> nie zwei Gründer oder keiner.
+    group.creator_id = user_id
+    membership.role = "admin"  # alter Gründer bleibt Admin, kann danach per leave gehen
+    target.role = "admin"      # falls er später selbst weiter übergibt, ist er danach Admin
+    db.commit()
+    return {"group_chat_id": group_chat_id, "creator_id": user_id}
+
     
 
 
@@ -231,23 +326,16 @@ def get_group_members(
     db: Session = Depends(get_dp),
     current_user=Depends(oauth2.get_current_user),
 ):
-    group = db.query(models.GroupChats).filter(
-        models.GroupChats.group_chat_id == group_chat_id,
-    ).first()
-    if not group:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"group chat {group_chat_id} not found")
+    group, membership = _get_group_and_membership(db, group_chat_id, current_user.id)
 
     # Nur Mitglieder dürfen die Mitgliederliste sehen.
-    is_member = db.query(models.GroupChatMembership).filter(
-        models.GroupChatMembership.group_chat_id == group_chat_id,
-        models.GroupChatMembership.participant_id == current_user.id,
-    ).first()
-    if not is_member:
+    if not membership:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="not a member of this group")
 
     # Mitgliedschaften mit den User-Daten joinen.
     rows = db.query(
         models.User.id, models.User.username, models.User.profile_picture_url,
+        models.GroupChatMembership.role,
     ).join(
         models.GroupChatMembership, models.GroupChatMembership.participant_id == models.User.id,
     ).filter(
@@ -255,8 +343,14 @@ def get_group_members(
     ).all()
 
     # User.id heißt im Schema user_id -> einmal umbenennen.
+    # Gründer steht in creator_id, nicht in role -> hier einsetzen.
     return [
-        {"user_id": r.id, "username": r.username, "profile_picture_url": r.profile_picture_url}
+        {
+            "user_id": r.id,
+            "username": r.username,
+            "profile_picture_url": r.profile_picture_url,
+            "role": "creator" if r.id == group.creator_id else r.role,
+        }
         for r in rows
     ]
 
@@ -294,39 +388,32 @@ def update_group_chat(
     db: Session = Depends(get_dp),
     current_user=Depends(oauth2.get_current_user),
 ):
-    # 1. Suchen der Gruppe in der Datenbank
-    group_query = db.query(models.GroupChats).filter(models.GroupChats.group_chat_id == group_chat_id)
-    group = group_query.first()
+    # 1. Gruppe + eigene Mitgliedschaft holen (404, falls die Gruppe nicht existiert)
+    group, membership = _get_group_and_membership(db, group_chat_id, current_user.id)
 
-    # 2. Fehler werfen, falls die Gruppe nicht existiert
-    if not group:
+    # 2. Berechtigung prüfen (Gründer oder Admin)
+    if _effective_role(group, membership) not in ("creator", "admin"):
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, 
-            detail=f"Group chat with id {group_chat_id} not found"
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the creator or an admin can update group details"
         )
 
-    # 3. Berechtigung prüfen (nur der Ersteller darf editieren)
-    if group.creator_id != current_user.id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, 
-            detail="Only the creator can update group details"
-        )
-
-    # 4. Nur gesendete Daten (exclude_unset=True) herausfiltern
+    # 3. Nur gesendete Daten (exclude_unset=True) herausfiltern
     update_data = group_update.model_dump(exclude_unset=True)
-    
+
     if not update_data:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, 
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail="No data provided to update"
         )
 
-    # 5. Spalten in der Datenbank aktualisieren und speichern
-    group_query.update(update_data, synchronize_session=False)
+    # 4. Gesendete Felder auf die geladene Gruppe schreiben und speichern
+    for key, value in update_data.items():
+        setattr(group, key, value)
     db.commit()
     db.refresh(group)
 
-    return {"message": "Group updated successfully", "group": schemas.GroupChatOut.model_validate(group)}
+    return {"message": "Group updated successfully", "group": schemas.GroupChatInformationOut.model_validate(group)}
 
 
 @router.post("/group_chat/{group_chat_id}/picture", response_model=schemas.GroupChatInformationOut)
@@ -337,14 +424,10 @@ async def upload_group_picture(
     current_user=Depends(oauth2.get_current_user),
 ):
     # 1. Gruppe + Berechtigung ZUERST prüfen -> kein Upload, der danach verwaist.
-    group = db.query(models.GroupChats).filter(
-        models.GroupChats.group_chat_id == group_chat_id,
-    ).first()
-    if not group:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"group chat {group_chat_id} not found")
+    group, membership = _get_group_and_membership(db, group_chat_id, current_user.id)
 
-    if group.creator_id != current_user.id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="only the creator can change the group picture")
+    if _effective_role(group, membership) not in ("creator", "admin"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="only the creator or an admin can change the group picture")
 
     # 2. Dateigröße prüfen (max 15MB)
     MAX_SIZE = 15 * 1024 * 1024
