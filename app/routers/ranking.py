@@ -5,7 +5,7 @@ import io
 import boto3
 from ..config import settings
 from ..redis_client import redis_client
-from sqlalchemy import func
+from sqlalchemy import func, and_, or_
 from .. import models, schemas, oauth2
 from ..database import get_dp
 from ..ranking_config import SWIPE_POINTS
@@ -163,104 +163,183 @@ def _day_bounds(day: date) -> tuple[datetime, datetime]:
     start = datetime.combine(day, time.min, tzinfo=timezone.utc)
     return start, start + timedelta(days=1)
 
+def _heute_schon_geswipt(db, current_user, today):
+    """Hat current_user heute schon eine Swipe-Session abgeschlossen?"""
+    day_start, day_end = _day_bounds(today)
+    return db.query(models.RankingScores).filter(
+        models.RankingScores.voter_id == current_user.id,
+        models.RankingScores.created_at >= day_start,
+        models.RankingScores.created_at < day_end,
+    ).first() is not None
+
+def _target_nicht_mehr_erlaubt(db, current_user):
+    """Teilfrage fuer Abfragen auf DailyTarget: Target inzwischen gemeldet oder geblockt?
+    Laeuft in derselben Anweisung mit, kostet also keinen eigenen Rundweg."""
+    reported = db.query(models.Report).filter(
+        models.Report.reporter_id == current_user.id,
+        models.Report.reported_user_id == models.DailyTarget.target_user_id
+    ).exists()
+
+    # Block in BEIDE Richtungen, wie in _erlaubte_kandidaten.
+    blocked = db.query(models.Block).filter(or_(
+        and_(models.Block.blocked_id == current_user.id, models.Block.blocker_id == models.DailyTarget.target_user_id),
+        and_(models.Block.blocker_id == current_user.id, models.Block.blocked_id == models.DailyTarget.target_user_id),
+        )).exists()
+
+    return or_(reported, blocked)
+
+def _target_von_heute(db, current_user, today):
+    """Das heute schon gezogene Target (idempotent), oder None, wenn neu gezogen werden muss.
+    Doppel-Swipes verhindert swipe_session."""
+
+
+    zeile = db.query(
+        models.DailyTarget,
+        _target_nicht_mehr_erlaubt(db, current_user).label("nicht_erlaubt"),
+    ).filter(
+        models.DailyTarget.voter_id == current_user.id,
+        models.DailyTarget.date == today
+    ).first()
+
+    if not zeile:
+        return None
+
+    if not zeile.nicht_erlaubt:
+        return zeile.DailyTarget.target_user
+
+
+    # Heutiges Target inzwischen gemeldet oder geblockt: nie wieder anzeigen.
+
+    if _heute_schon_geswipt(db, current_user, today):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Dein heutiges Ranking ist bereits abgeschlossen."
+        )
+
+    # Kein eigenes commit: Loeschen und neues Match landen im selben commit.
+    db.delete(zeile.DailyTarget)
+    return None
+
+
+
+
+def _erlaubte_kandidaten(db, current_user, one_week_ago):
+    """Wer ueberhaupt infrage kommt: alle Regeln ausser der Follower-Regel.
+    Gilt auch fuer die Notloesung. Liefert eine Query mit den User-IDs."""
+    # Block in BEIDE Richtungen: ich habe ihn geblockt oder er mich.
+    block_besteht = db.query(models.Block).filter(or_(
+        and_(models.Block.blocker_id == current_user.id, models.Block.blocked_id == models.User.id),
+        and_(models.Block.blocker_id == models.User.id, models.Block.blocked_id == current_user.id),
+    )).exists()
+
+    # Jede Meldung zaehlt, egal zu welchem Inhalt und mit welchem Status.
+    ich_habe_gemeldet = db.query(models.Report).filter(
+        models.Report.reporter_id == current_user.id,
+        models.Report.reported_user_id == models.User.id,
+    ).exists()
+
+    return db.query(models.User.id).filter(
+        models.User.id != current_user.id,
+        models.User.ranking_enabled == True,
+        # Eine abgelaufene Sperre behaelt ihr Datum, deshalb reicht "is None" nicht.
+        or_(models.User.banned_until.is_(None), models.User.banned_until <= datetime.now(timezone.utc)),
+        ~block_besteht,
+        ~ich_habe_gemeldet,
+    ).join(models.Post, models.Post.owner_id == models.User.id) \
+     .filter(models.Post.created_at >= one_week_ago) \
+     .group_by(models.User.id)
+
+
+def _neues_target_ziehen(db, current_user, one_week_ago):
+    """Waehlt eine Person aus den erlaubten Kandidaten und speichert das Match."""
+    ich_folge = db.query(models.Follows).filter(
+        models.Follows.follower_id == current_user.id,
+        models.Follows.followee_id == models.User.id,
+    ).exists()
+
+    erlaubt = _erlaubte_kandidaten(db, current_user, one_week_ago)
+
+    # Normalfall: nur Leute, denen ich noch nicht folge.
+    eligible = erlaubt.filter(~ich_folge)
+    eligible_count = eligible.count()
+
+    # Notloesung: Lieber jemand Gefolgtes als kein Ranking und ein gerissener Streak.
+    if eligible_count == 0:
+        eligible = erlaubt
+        eligible_count = eligible.count()
+
+    if eligible_count == 0:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Aktuell sind keine anderen Teilnehmer für das Ranking verfügbar."
+        )
+
+    # Zufall OHNE order_by(random()): wir wuerfeln eine POSITION (0..count-1)
+    # und springen per offset direkt dorthin. order_by(User.id) macht die
+    # Reihenfolge deterministisch, sonst waere "Position 17" nicht wohldefiniert.
+    target_id = eligible.order_by(models.User.id) \
+        .offset(random.randrange(eligible_count)) \
+        .limit(1).scalar()
+
+    target = db.query(models.User).filter(models.User.id == target_id).first()
+    if not target:
+        # Race-Absicherung: User koennte zwischen count() und Auswahl geloescht
+        # worden sein — dann wie "keine Teilnehmer" behandeln.
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Aktuell sind keine anderen Teilnehmer für das Ranking verfügbar."
+        )
+
+    new_match = models.DailyTarget(voter_id=current_user.id, target_user_id=target.id)
+    db.add(new_match)
+    db.commit()
+    return target
+
+
 @router.get("/my_target", response_model=schemas.MyTargetOut)
 def get_personal_target(db: Session = Depends(get_dp), current_user: models.User = Depends(oauth2.get_current_user)):
-    today = date.today()
-    one_week_ago = datetime.now(timezone.utc) - timedelta(days=7)
-
-    # 1. Prüfen: Hat der User selbst Ranking aktiviert?
     if not current_user.ranking_enabled:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Du musst selbst am Ranking teilnehmen, um andere bewerten zu können."
         )
 
-    # 2. Tagessperre über DailyTarget: existiert heute schon ein Match → idempotent
-    #    dasselbe Target zurückgeben (Doppel-Swipe verhindert swipe_session).
-    existing_match = db.query(models.DailyTarget).filter(
-        models.DailyTarget.voter_id == current_user.id,
-        models.DailyTarget.date == today
-    ).first()
+    today = date.today()
+    one_week_ago = datetime.now(timezone.utc) - timedelta(days=7)
 
-    if existing_match:
-        target = existing_match.target_user
-    else:
-        # 3. Zufälliges Target finden, das:
-        # - Nicht der User selbst ist
-        # - Das Ranking-Feature aktiviert hat (Opt-In)
-        # - Posts in den letzten 7 Tagen hat
-        #
-        # Nur die IDs der Teilnahmeberechtigten (leichtgewichtig, laeuft ueber Indexe):
-        eligible = db.query(models.User.id).filter(
-            models.User.id != current_user.id,
-            models.User.ranking_enabled == True
-        ).join(models.Post, models.Post.owner_id == models.User.id) \
-         .filter(models.Post.created_at >= one_week_ago) \
-         .group_by(models.User.id)
+    target = _target_von_heute(db, current_user, today)
+    if target is None:
+        target = _neues_target_ziehen(db, current_user, one_week_ago)
 
-        eligible_count = eligible.count()
-        if eligible_count == 0:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Aktuell sind keine anderen Teilnehmer für das Ranking verfügbar."
-            )
-
-        # Zufall OHNE order_by(random()): wir wuerfeln eine POSITION (0..count-1)
-        # und springen per offset direkt dorthin. order_by(User.id) macht die
-        # Reihenfolge deterministisch, sonst waere "Position 17" nicht wohldefiniert.
-        target_id = eligible.order_by(models.User.id) \
-            .offset(random.randrange(eligible_count)) \
-            .limit(1).scalar()
-
-        target = db.query(models.User).filter(models.User.id == target_id).first()
-        if not target:
-            # Race-Absicherung: User koennte zwischen count() und Auswahl geloescht
-            # worden sein — dann wie "keine Teilnehmer" behandeln.
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Aktuell sind keine anderen Teilnehmer für das Ranking verfügbar."
-            )
-
-        # 4. Match speichern
-        new_match = models.DailyTarget(voter_id=current_user.id, target_user_id=target.id)
-        db.add(new_match)
-        db.commit()
-
-    # 5. Posts des Targets der letzten 7 Tage laden (inkl. flag fürs Swipen)
+    # Posts des Targets der letzten 7 Tage laden (inkl. flag fürs Swipen)
     posts = db.query(models.Post).filter(
         models.Post.owner_id == target.id,
         models.Post.created_at >= one_week_ago
-    ).order_by(models.Post.created_at.desc()).all()
+    ).order_by(models.Post.created_at.desc()).limit(20).all()
 
     return {"user_data": target, "posts": posts}
 
 
-@router.post("/swipe_session", response_model=schemas.SwipeSessionOut, status_code=status.HTTP_201_CREATED)
-def swipe_session(
-    session: schemas.SwipeSession,
-    db: Session = Depends(get_dp),
-    current_user: models.User = Depends(oauth2.get_current_user)
-):
-    today = date.today()
-    daily_target = db.query(models.DailyTarget).filter(
+def _swipebares_target(db, current_user, target_user_id, today):
+    """Die heutige DailyTarget-Zeile zu genau diesem Target, sonst 404."""
+    zeile = db.query(
+        models.DailyTarget,
+        _target_nicht_mehr_erlaubt(db, current_user).label("nicht_erlaubt"),
+    ).filter(
         models.DailyTarget.voter_id == current_user.id,
         models.DailyTarget.date == today,
-        models.DailyTarget.target_user_id == session.target_user_id,
-        ).first()
-    
-    if not daily_target:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No target found. get yourself a target first")
-    
-    day_start, day_end = _day_bounds(today)
-    already_swiped = db.query(models.RankingScores).filter(
-        models.RankingScores.voter_id == current_user.id,
-        models.RankingScores.created_at >= day_start,
-        models.RankingScores.created_at < day_end,
+        models.DailyTarget.target_user_id == target_user_id,
     ).first()
 
-    if already_swiped:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="You already voted tody")
-    
+    # Auch bei gemeldetem oder geblocktem Target: Die App laedt dann my_target neu.
+    if not zeile or zeile.nicht_erlaubt:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No target found. get yourself a target first")
+
+    return zeile.DailyTarget
+
+
+def _swipe_posts_laden(db, session):
+    """Prueft die geswipten Posts und liefert sie als {post_id: Post}."""
     post_ids = [s.post_id for s in session.swipes]
     if len(post_ids) != len(set(post_ids)):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="You can only swipe once")
@@ -277,7 +356,12 @@ def swipe_session(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Alle Posts müssen vom Target stammen."
             )
-        
+
+    return posts_by_id
+
+
+def _punkte_auswerten(session, posts_by_id, voter_id):
+    """Rechnet die Swipes in Punkte um. Liefert (total_points, breakdown, RankingScores-Zeilen)."""
     breakdown = {"none": 0, "engagement": 0, "creativity": 0, "productivity": 0}
     total_points = 0
     rows = []
@@ -291,17 +375,22 @@ def swipe_session(
         breakdown[post.flag or "none"] += pts
 
         rows.append(models.RankingScores(
-            voter_id=current_user.id,
+            voter_id=voter_id,
             post_id=post.id,
             direction=s.direction,
             points=pts
         ))
 
-    # --- XP & Streak (Phase 1.3) ---
+    return total_points, breakdown, rows
+
+
+def _streak_und_xp_buchen(current_user, target_user, total_points, today):
+    """XP & Streak (Phase 1.3). Aendert nur die Objekte, committet nicht. Liefert die XP des Bewerters."""
     # 1) Streak des BEWERTERS fortschreiben. last_swipe_date = der TAG der letzten
     #    abgeschlossenen Session. War die gestern -> Streak +1, sonst faengt er wieder
-    #    bei 1 an. Ein zweiter Lauf am selben Tag ist durch already_swiped oben schon
-    #    ausgeschlossen, deshalb muss der Fall "== heute" hier nicht behandelt werden.
+    #    bei 1 an. Ein zweiter Lauf am selben Tag ist durch _heute_schon_geswipt in
+    #    swipe_session schon ausgeschlossen, deshalb muss der Fall "== heute" hier
+    #    nicht behandelt werden.
     yesterday = today - timedelta(days=1)
     if current_user.last_swipe_date == yesterday:
         current_user.streak_count += 1
@@ -315,9 +404,40 @@ def swipe_session(
     current_user.xp += xp_gained
 
     # 3) XP fuer den BEWERTETEN: 1 XP pro erhaltenem Punkt, sofort gutgeschrieben.
-    #    daily_target.target_user ist der oben validierte Ziel-User (gleiche Session).
-    daily_target.target_user.xp += total_points * XP_PER_POINT_RECEIVED
+    #    target_user ist der schon validierte Ziel-User (gleiche Session).
+    target_user.xp += total_points * XP_PER_POINT_RECEIVED
 
+    return xp_gained
+
+
+def _leaderboard_eintragen(target_user_id, total_points, today):
+    """Bucht die Punkte in die heutige Live-Rangliste in Redis."""
+    leaderboard_key = f"leaderboard:{today.isoformat()}"
+    try:
+        redis_client.zincrby(leaderboard_key, total_points, str(target_user_id))
+        redis_client.expire(leaderboard_key, 172800)
+    except redis.RedisError as e:
+        # Swipes, XP und Streak sind schon gespeichert. Ohne Redis fehlen die Punkte
+        # nur in der heutigen Live-Rangliste; der Tagesbonus rechnet aus SQL.
+        print(f"Warnung: leaderboard-update fehlgeschlagen für User {target_user_id}: {e}")
+
+
+@router.post("/swipe_session", response_model=schemas.SwipeSessionOut, status_code=status.HTTP_201_CREATED)
+def swipe_session(
+    session: schemas.SwipeSession,
+    db: Session = Depends(get_dp),
+    current_user: models.User = Depends(oauth2.get_current_user)
+):
+    today = date.today()
+
+    daily_target = _swipebares_target(db, current_user, session.target_user_id, today)
+
+    if _heute_schon_geswipt(db, current_user, today):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="You already voted tody")
+
+    posts_by_id = _swipe_posts_laden(db, session)
+    total_points, breakdown, rows = _punkte_auswerten(session, posts_by_id, current_user.id)
+    xp_gained = _streak_und_xp_buchen(current_user, daily_target.target_user, total_points, today)
 
     # --- Activity fuers Target (Phase 4.2) ---
     # Eine aggregierte Meldung pro Session, nicht pro einzelnem Swipe.
@@ -334,18 +454,8 @@ def swipe_session(
     except Exception:
         db.rollback()
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not save swipes")
-    
-    leaderboard_key = f"leaderboard:{today.isoformat()}"
-    try:
-        redis_client.zincrby(leaderboard_key, total_points, str(session.target_user_id))
-        redis_client.expire(leaderboard_key, 172800)
-    except redis.RedisError as e:
-        # Swipes, XP und Streak sind schon gespeichert. Ohne Redis fehlen die Punkte
-        # nur in der heutigen Live-Rangliste; der Tagesbonus rechnet aus SQL.
-        print(f"Warnung: leaderboard-update fehlgeschlagen für User {session.target_user_id}: {e}")
 
-
-
+    _leaderboard_eintragen(session.target_user_id, total_points, today)
 
     return {
         "success": True,
