@@ -8,7 +8,7 @@ from ..redis_client import redis_client
 from sqlalchemy import func, and_, or_
 from .. import models, schemas, oauth2
 from ..database import get_dp
-from ..ranking_config import SWIPE_POINTS
+from ..ranking_config import SWIPE_POINTS, MAX_REROLLS_PER_DAY
 from ..xp_config import XP_PER_SESSION, XP_PER_POINT_RECEIVED, STREAK_MILESTONE_BONUS, placement_bonus_for_rank
 from datetime import datetime, timedelta, timezone, date, time
 from typing import Optional
@@ -153,7 +153,6 @@ def _get_leaderboard_from_redis(db, current_user):
 
 
 
-
 def _day_bounds(day: date) -> tuple[datetime, datetime]:
     """Ein Kalendertag als [start, ende)-Zeitfenster in UTC.
 
@@ -173,7 +172,7 @@ def _heute_schon_geswipt(db, current_user, today):
     ).first() is not None
 
 def _target_nicht_mehr_erlaubt(db, current_user):
-    """Teilfrage fuer Abfragen auf DailyTarget: Target inzwischen gemeldet oder geblockt?
+    """Teilfrage fuer Abfragen auf DailyTarget: Target inzwischen gemeldet oder geblockt oder gesperrt?
     Laeuft in derselben Anweisung mit, kostet also keinen eigenen Rundweg."""
     reported = db.query(models.Report).filter(
         models.Report.reporter_id == current_user.id,
@@ -186,10 +185,18 @@ def _target_nicht_mehr_erlaubt(db, current_user):
         and_(models.Block.blocker_id == current_user.id, models.Block.blocked_id == models.DailyTarget.target_user_id),
         )).exists()
 
-    return or_(reported, blocked)
+    # Nur eine laufende Sperre zaehlt: Eine abgelaufene behaelt ihr Datum.
+    gesperrt = db.query(models.User).filter(
+        models.User.id == models.DailyTarget.target_user_id,
+        models.User.banned_until > datetime.now(timezone.utc),
+    ).exists()
+
+    return or_(reported, blocked, gesperrt)
+
 
 def _target_von_heute(db, current_user, today):
-    """Das heute schon gezogene Target (idempotent), oder None, wenn neu gezogen werden muss.
+    """Liefert (target, alte_zeile). Target ist das heute schon gezogene (idempotent) oder
+    None, wenn neu gezogen werden muss; alte_zeile ist dann die zu ueberschreibende Zeile.
     Doppel-Swipes verhindert swipe_session."""
 
 
@@ -201,14 +208,15 @@ def _target_von_heute(db, current_user, today):
         models.DailyTarget.date == today
     ).first()
 
+
     if not zeile:
-        return None
+        return None, None
 
     if not zeile.nicht_erlaubt:
-        return zeile.DailyTarget.target_user
+        return zeile.DailyTarget.target_user, None
 
 
-    # Heutiges Target inzwischen gemeldet oder geblockt: nie wieder anzeigen.
+    # Heutiges Target inzwischen gemeldet, geblockt oder gesperrt: nie wieder anzeigen.
 
     if _heute_schon_geswipt(db, current_user, today):
         raise HTTPException(
@@ -216,9 +224,13 @@ def _target_von_heute(db, current_user, today):
             detail="Dein heutiges Ranking ist bereits abgeschlossen."
         )
 
-    # Kein eigenes commit: Loeschen und neues Match landen im selben commit.
-    db.delete(zeile.DailyTarget)
-    return None
+    if zeile.DailyTarget.rerolls >= MAX_REROLLS_PER_DAY:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Für heute sind keine weiteren Neuziehungen möglich."
+        )
+
+    return None, zeile.DailyTarget
 
 
 
@@ -250,8 +262,9 @@ def _erlaubte_kandidaten(db, current_user, one_week_ago):
      .group_by(models.User.id)
 
 
-def _neues_target_ziehen(db, current_user, one_week_ago):
-    """Waehlt eine Person aus den erlaubten Kandidaten und speichert das Match."""
+def _neues_target_ziehen(db, current_user, one_week_ago, alte_zeile):
+    """Waehlt eine Person aus den erlaubten Kandidaten und speichert das Match.
+    Gibt es heute schon eine Zeile, wird sie ueberschrieben und die Neuziehung gezaehlt."""
     ich_folge = db.query(models.Follows).filter(
         models.Follows.follower_id == current_user.id,
         models.Follows.followee_id == models.User.id,
@@ -290,8 +303,11 @@ def _neues_target_ziehen(db, current_user, one_week_ago):
             detail="Aktuell sind keine anderen Teilnehmer für das Ranking verfügbar."
         )
 
-    new_match = models.DailyTarget(voter_id=current_user.id, target_user_id=target.id)
-    db.add(new_match)
+    if alte_zeile:
+        alte_zeile.target_user_id = target.id
+        alte_zeile.rerolls += 1
+    else:
+        db.add(models.DailyTarget(voter_id=current_user.id, target_user_id=target.id))
     db.commit()
     return target
 
@@ -307,9 +323,9 @@ def get_personal_target(db: Session = Depends(get_dp), current_user: models.User
     today = date.today()
     one_week_ago = datetime.now(timezone.utc) - timedelta(days=7)
 
-    target = _target_von_heute(db, current_user, today)
+    target, alte_zeile = _target_von_heute(db, current_user, today)
     if target is None:
-        target = _neues_target_ziehen(db, current_user, one_week_ago)
+        target = _neues_target_ziehen(db, current_user, one_week_ago, alte_zeile)
 
     # Posts des Targets der letzten 7 Tage laden (inkl. flag fürs Swipen)
     posts = db.query(models.Post).filter(

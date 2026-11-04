@@ -115,9 +115,16 @@ class DailyTarget(Base):
     voter_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True) # Wer schaut?
     target_user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False) # Wer wird bewertet?
     date = Column(DATE, nullable=False, server_default=text('now()'))
+    rerolls = Column(Integer, nullable=False, server_default=text('0')) # Neuziehungen heute
     
     voter = relationship("User", foreign_keys=[voter_id])
     target_user = relationship("User", foreign_keys=[target_user_id])
+    
+
+    __table_args__ = (
+        Index('ix_daily_targets_target_user_id_date', 'target_user_id', 'date'),
+    )
+
 
 
 class RankingScores(Base):

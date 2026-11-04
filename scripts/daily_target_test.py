@@ -1,5 +1,5 @@
-"""Prueft die Auswahl im Tagesranking (GET /ranking/my_target): Filter, Notloesung und
-Post-Limit — gegen die ECHTE DB, komplett in einer Transaktion, die am Ende
+"""Prueft die Auswahl im Tagesranking (GET /ranking/my_target): Filter, Notloesung,
+Neuziehungen und Post-Limit — gegen die ECHTE DB, komplett in einer Transaktion, die am Ende
 zurueckgerollt wird (gleicher Trick wie group_roles_test.py). Das commit() in der
 Route gibt dabei nur einen Savepoint frei.
 
@@ -10,7 +10,7 @@ Start:  .\\venv\\Scripts\\python.exe scripts\\daily_target_test.py
 """
 import secrets
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -107,6 +107,22 @@ def match_anzahl():
     return db.query(models.DailyTarget).filter(models.DailyTarget.voter_id == voter.id).count()
 
 
+def match_stand():
+    """(target_user_id, rerolls) der einzigen Match-Zeile, frisch aus der DB."""
+    zeile = db.query(models.DailyTarget.target_user_id, models.DailyTarget.rerolls).filter(
+        models.DailyTarget.voter_id == voter.id).one()
+    return zeile.target_user_id, zeile.rerolls
+
+
+def fehlertext():
+    """Ruft die Route auf und liefert den Fehlertext, oder None, wenn ein Target kam."""
+    try:
+        ranking.get_personal_target(db=db, current_user=voter)
+        return None
+    except HTTPException as e:
+        return e.detail
+
+
 def swipe_status(target):
     """Swipt einen Post des Targets. Liefert 201 oder den Fehlercode."""
     post = db.query(models.Post).filter(models.Post.owner_id == target.id).first()
@@ -137,6 +153,11 @@ def melden(gegen, target_type="user", target_id=None, status="pending"):
 
 def folgen(wem):
     db.add(models.Follows(follower_id=voter.id, followee_id=wem.id))
+    db.flush()
+
+
+def sperren(u):
+    u.banned_until = JETZT + timedelta(days=3)
     db.flush()
 
 
@@ -241,7 +262,7 @@ try:
     alter_post = db.query(models.Post).filter(models.Post.owner_id == spaeter_gemeldet.id).first()
     melden(spaeter_gemeldet)
     check("noch nicht geswipt -> neu gezogen", aufruf() == ersatz.id)
-    check("alte Zeile ist weg, nur ein Match", match_anzahl() == 1, f"Matches: {match_anzahl()}")
+    check("alte Zeile ueberschrieben, nur ein Match", match_anzahl() == 1, f"Matches: {match_anzahl()}")
     check("zweiter Aufruf bleibt beim Ersatz", aufruf() == ersatz.id)
     try:
         ranking.swipe_session(
@@ -290,7 +311,32 @@ try:
     db.flush()
     check("geblockt, niemand sonst da -> 404", aufruf() is None)
 
-    print("\nSwipe direkt nach Meldung oder Block, ohne neues my_target")
+    print("\nHeutiges Target nachtraeglich gesperrt")
+    spaeter_gesperrt = neuer_user("spaeter_gesperrt")
+    pool(spaeter_gesperrt)
+    check("vor der Sperre wird er gezogen", ziehe() == spaeter_gesperrt.id)
+    pool(spaeter_gesperrt, ersatz)
+    check("ohne Sperre bleibt das Target", aufruf() == spaeter_gesperrt.id)
+    sperren(spaeter_gesperrt)
+    check("gesperrt, noch nicht geswipt -> neu gezogen", aufruf() == ersatz.id)
+    check("gesperrt: nur ein Match", match_anzahl() == 1, f"Matches: {match_anzahl()}")
+
+    sperre_abgelaufen = neuer_user("sperre_abgelaufen")
+    pool(sperre_abgelaufen, ersatz)
+    db.query(models.DailyTarget).filter(models.DailyTarget.voter_id == voter.id).delete(
+        synchronize_session=False)
+    db.add(models.DailyTarget(voter_id=voter.id, target_user_id=sperre_abgelaufen.id))
+    sperre_abgelaufen.banned_until = JETZT - timedelta(days=3)
+    db.flush()
+    check("abgelaufene Sperre -> Target bleibt", aufruf() == sperre_abgelaufen.id)
+
+    einziger_gesperrt = neuer_user("einziger_gesperrt")
+    pool(einziger_gesperrt)
+    check("einziger Kandidat wird gezogen (Sperre)", ziehe() == einziger_gesperrt.id)
+    sperren(einziger_gesperrt)
+    check("gesperrt, niemand sonst da -> 404", aufruf() is None)
+
+    print("\nSwipe direkt nach Meldung, Block oder Sperre, ohne neues my_target")
     def block_von_mir(u):
         db.add(models.Block(blocker_id=voter.id, blocked_id=u.id))
         db.flush()
@@ -301,7 +347,8 @@ try:
 
     for name, slug, aktion in (("gemeldet", "swipe_gemeldet", melden),
                                ("von mir geblockt", "swipe_von_mir", block_von_mir),
-                               ("blockt mich", "swipe_gegen_mich", block_gegen_mich)):
+                               ("blockt mich", "swipe_gegen_mich", block_gegen_mich),
+                               ("gesperrt", "swipe_gesperrt", sperren)):
         u = neuer_user(slug)
         pool(u)
         check(f"{name}: Target gezogen", ziehe() == u.id)
@@ -323,6 +370,89 @@ try:
     check("Punkte gespeichert", score_anzahl() == 1, f"Scores: {score_anzahl()}")
     check("Leaderboard aktualisiert", redis_attrappe.zincrby_aufrufe == 1,
           f"Aufrufe: {redis_attrappe.zincrby_aufrufe}")
+    db.query(models.RankingScores).filter(models.RankingScores.voter_id == voter.id).delete(
+        synchronize_session=False)
+    db.flush()
+
+    print("\nAbgelaufene Sperre haelt den Swipe nicht auf")
+    pool(sperre_vorbei)
+    check("Target gezogen (Sperre vorbei)", ziehe() == sperre_vorbei.id)
+    status = swipe_status(sperre_vorbei)
+    check("Sperre vorbei: Swipe -> 201", status == 201, str(status))
+    db.query(models.RankingScores).filter(models.RankingScores.voter_id == voter.id).delete(
+        synchronize_session=False)
+    db.flush()
+
+    print("\nNeuziehungen: hoechstens 2 pro Tag")
+    r1, r2, r3, r4 = (neuer_user(f"reroll_{i}") for i in range(1, 5))
+    pool(r1)
+    check("Erstziehung", ziehe() == r1.id)
+    check("Erstziehung zaehlt nicht", match_stand() == (r1.id, 0), str(match_stand()))
+    check("erneuter Aufruf zaehlt nicht", aufruf() == r1.id and match_stand() == (r1.id, 0), str(match_stand()))
+
+    pool(r1, r2)
+    melden(r1)
+    check("1. Neuziehung nach Meldung", aufruf() == r2.id)
+    check("1. Neuziehung gezaehlt", match_stand() == (r2.id, 1), str(match_stand()))
+    check("Aufruf danach zaehlt nicht", aufruf() == r2.id and match_stand() == (r2.id, 1), str(match_stand()))
+
+    pool(r2, r3)
+    block_von_mir(r2)
+    check("2. Neuziehung nach Block", aufruf() == r3.id)
+    check("2. Neuziehung gezaehlt", match_stand() == (r3.id, 2), str(match_stand()))
+    check("gueltiges Target bleibt nach 2 Neuziehungen", aufruf() == r3.id and match_stand() == (r3.id, 2),
+          str(match_stand()))
+
+    pool(r3, r4)  # r4 waere frei, das 404 kommt also wirklich vom Limit
+    sperren(r3)
+    text = fehlertext()
+    check("3. Neuziehung -> 404", aufruf() is None)
+    check("Fehlertext nennt das Limit", text is not None and "Neuziehungen" in text, str(text))
+    check("Zeile bleibt unveraendert", match_stand() == (r3.id, 2), str(match_stand()))
+    check("nur ein Match", match_anzahl() == 1, f"Matches: {match_anzahl()}")
+
+    print("\nNeuziehung ohne Kandidaten zaehlt nicht")
+    k1 = neuer_user("kein_kandidat")
+    pool(k1)
+    check("Target gezogen (ohne Kandidaten)", ziehe() == k1.id)
+    melden(k1)
+    check("niemand sonst da -> 404", aufruf() is None)
+    check("nichts gezaehlt", match_stand() == (k1.id, 0), str(match_stand()))
+    k2 = neuer_user("spaeter_da")
+    pool(k1, k2)
+    check("spaeter wieder Kandidat da -> gezogen", aufruf() == k2.id)
+    check("erst jetzt gezaehlt", match_stand() == (k2.id, 1), str(match_stand()))
+
+    print("\nNeuziehung laesst andere Tage in Ruhe")
+    t_alt = neuer_user("tag_alt")
+    t_heute = neuer_user("tag_heute")
+    t_neu = neuer_user("tag_neu")
+    pool(t_heute)
+    check("Target gezogen (Tage)", ziehe() == t_heute.id)
+    vorgestern = models.DailyTarget(voter_id=voter.id, target_user_id=t_alt.id,
+                                    date=date.today() - timedelta(days=2))
+    db.add(vorgestern)
+    db.flush()
+    pool(t_heute, t_neu)
+    melden(t_heute)
+    check("Neuziehung heute", aufruf() == t_neu.id)
+    db.refresh(vorgestern)
+    check("alte Zeile behaelt ihr Target", vorgestern.target_user_id == t_alt.id)
+    check("alte Zeile behaelt ihren Zaehler", vorgestern.rerolls == 0, str(vorgestern.rerolls))
+
+    print("\nNach 2 Neuziehungen: Swipe und schon geswipt")
+    s = neuer_user("swipe_limit")
+    pool(s)
+    check("Target gezogen (Limit)", ziehe() == s.id)
+    db.query(models.DailyTarget).filter(models.DailyTarget.voter_id == voter.id).update(
+        {models.DailyTarget.rerolls: 2}, synchronize_session=False)
+    db.flush()
+    db.expire_all()
+    status = swipe_status(s)
+    check("Limit erreicht: Swipe -> 201", status == 201, str(status))
+    melden(s)
+    text = fehlertext()
+    check("geswipt + Limit: Meldung sagt abgeschlossen", text is not None and "abgeschlossen" in text, str(text))
     db.query(models.RankingScores).filter(models.RankingScores.voter_id == voter.id).delete(
         synchronize_session=False)
     db.flush()
@@ -349,6 +479,15 @@ try:
     db.flush()
     check("geswipt + geblockt -> 404, kein zweites Target", aufruf() is None)
     check("Match bleibt bestehen (Block)", match_anzahl() == 1, f"Matches: {match_anzahl()}")
+
+    print("\nHeutiges Target gesperrt, schon geswipt")
+    geswipt_gesperrt = neuer_user("geswipt_gesperrt")
+    pool(geswipt_gesperrt)
+    check("Target gezogen (Sperre)", ziehe() == geswipt_gesperrt.id)
+    pool(geswipt_gesperrt, frei)
+    sperren(geswipt_gesperrt)
+    check("geswipt + gesperrt -> 404, kein zweites Target", aufruf() is None)
+    check("Match bleibt bestehen (Sperre)", match_anzahl() == 1, f"Matches: {match_anzahl()}")
 
     print("\nVoter ohne Opt-in")
     voter.ranking_enabled = False

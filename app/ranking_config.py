@@ -23,6 +23,10 @@ SWIPE_POINTS = {
     "productivity": {"right": 5, "left": 2},
 }
 
+# Hoechstens so viele Neuziehungen pro Tag nach Meldung, Block oder Sperre.
+# Ohne Grenze liesse sich per Melden/Blocken steuern, wer die Punkte bekommt.
+MAX_REROLLS_PER_DAY = 2
+
 
 # --- Feed-Ranking: Gewichte fuer die Score-Sortierung in get_posts ---
 # score = FEED_VOTE_WEIGHT * votes
