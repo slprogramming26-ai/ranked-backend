@@ -8,7 +8,7 @@ from ..redis_client import redis_client
 from sqlalchemy import func, and_, or_
 from .. import models, schemas, oauth2
 from ..database import get_dp
-from ..ranking_config import SWIPE_POINTS, MAX_REROLLS_PER_DAY
+from ..ranking_config import SWIPE_POINTS, MAX_REROLLS_PER_DAY, TARGET_LOCATION_BONUS, TARGET_RECENT_DAYS,TARGET_RECENT_FACTOR,TARGET_VIBE_BONUS, TARGET_MAX_CANDIDATES
 from ..xp_config import XP_PER_SESSION, XP_PER_POINT_RECEIVED, STREAK_MILESTONE_BONUS, placement_bonus_for_rank
 from datetime import datetime, timedelta, timezone, date, time
 from typing import Optional
@@ -262,7 +262,54 @@ def _erlaubte_kandidaten(db, current_user, one_week_ago):
      .group_by(models.User.id)
 
 
-def _neues_target_ziehen(db, current_user, one_week_ago, alte_zeile):
+def _target_gewicht(kandidat, current_user):
+    """Wie gross die Chance dieses Kandidaten ist. Wird nie 0: Jeder behaelt eine Chance."""
+    gewicht = 1
+
+    meine_vibes = {current_user.vibe_factor_1, current_user.vibe_factor_2} - {None}
+    kandidat_vibes = {kandidat.vibe_factor_1, kandidat.vibe_factor_2}
+    if meine_vibes & kandidat_vibes:
+        gewicht += TARGET_VIBE_BONUS
+
+    if current_user.location_id is not None and kandidat.location_id == current_user.location_id:
+        gewicht += TARGET_LOCATION_BONUS
+
+    # Wer heute schon oft gezogen wurde, kommt seltener: schuetzt das Leaderboard.
+    gewicht = gewicht / (1 + kandidat.heute_gezogen)
+
+    if kandidat.kuerzlich_mein_target:
+        gewicht = gewicht * TARGET_RECENT_FACTOR
+
+    return gewicht
+
+
+def _kandidaten_laden(db, eligible, current_user, today):
+    """Holt zufaellige Kandidaten samt allem, was _target_gewicht braucht. Eine Anweisung."""
+    # Wie oft wurde diese Person heute schon gezogen, von allen Usern zusammen?
+    heute_gezogen = db.query(func.count(models.DailyTarget.id)).filter(
+        models.DailyTarget.target_user_id == models.User.id,
+        models.DailyTarget.date == today,
+    ).scalar_subquery()
+
+    # War diese Person in den letzten Tagen schon mein Target?
+    kuerzlich_mein_target = db.query(models.DailyTarget).filter(
+        models.DailyTarget.voter_id == current_user.id,
+        models.DailyTarget.target_user_id == models.User.id,
+        models.DailyTarget.date >= today - timedelta(days=TARGET_RECENT_DAYS),
+    ).exists()
+
+    return eligible.add_columns(
+        models.User.vibe_factor_1,
+        models.User.vibe_factor_2,
+        models.User.location_id,
+        heute_gezogen.label("heute_gezogen"),
+        kuerzlich_mein_target.label("kuerzlich_mein_target"),
+    ).order_by(func.random()).limit(TARGET_MAX_CANDIDATES).all()
+
+
+
+
+def _neues_target_ziehen(db, current_user, one_week_ago, today, alte_zeile):
     """Waehlt eine Person aus den erlaubten Kandidaten und speichert das Match.
     Gibt es heute schon eine Zeile, wird sie ueberschrieben und die Neuziehung gezaehlt."""
     ich_folge = db.query(models.Follows).filter(
@@ -273,30 +320,25 @@ def _neues_target_ziehen(db, current_user, one_week_ago, alte_zeile):
     erlaubt = _erlaubte_kandidaten(db, current_user, one_week_ago)
 
     # Normalfall: nur Leute, denen ich noch nicht folge.
-    eligible = erlaubt.filter(~ich_folge)
-    eligible_count = eligible.count()
+    kandidaten = _kandidaten_laden(db, erlaubt.filter(~ich_folge), current_user, today)
 
     # Notloesung: Lieber jemand Gefolgtes als kein Ranking und ein gerissener Streak.
-    if eligible_count == 0:
-        eligible = erlaubt
-        eligible_count = eligible.count()
+    if not kandidaten:
+        kandidaten = _kandidaten_laden(db, erlaubt, current_user, today)
 
-    if eligible_count == 0:
+    if not kandidaten:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Aktuell sind keine anderen Teilnehmer für das Ranking verfügbar."
         )
 
-    # Zufall OHNE order_by(random()): wir wuerfeln eine POSITION (0..count-1)
-    # und springen per offset direkt dorthin. order_by(User.id) macht die
-    # Reihenfolge deterministisch, sonst waere "Position 17" nicht wohldefiniert.
-    target_id = eligible.order_by(models.User.id) \
-        .offset(random.randrange(eligible_count)) \
-        .limit(1).scalar()
+    gewichte = [_target_gewicht(kandidat, current_user) for kandidat in kandidaten]
+    gewinner = random.choices(kandidaten, weights=gewichte, k=1)[0]
 
-    target = db.query(models.User).filter(models.User.id == target_id).first()
+    target = db.query(models.User).filter(models.User.id == gewinner.id).first()
+
     if not target:
-        # Race-Absicherung: User koennte zwischen count() und Auswahl geloescht
+        # Race-Absicherung: User koennte zwischen Laden und Auswahl geloescht
         # worden sein — dann wie "keine Teilnehmer" behandeln.
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -325,7 +367,8 @@ def get_personal_target(db: Session = Depends(get_dp), current_user: models.User
 
     target, alte_zeile = _target_von_heute(db, current_user, today)
     if target is None:
-        target = _neues_target_ziehen(db, current_user, one_week_ago, alte_zeile)
+        target = _neues_target_ziehen(db, current_user, one_week_ago, today, alte_zeile)
+
 
     # Posts des Targets der letzten 7 Tage laden (inkl. flag fürs Swipen)
     posts = db.query(models.Post).filter(

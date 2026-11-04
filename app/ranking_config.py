@@ -28,6 +28,16 @@ SWIPE_POINTS = {
 MAX_REROLLS_PER_DAY = 2
 
 
+# --- Tagesranking: Gewicht eines Kandidaten bei der Target-Auswahl ---
+TARGET_VIBE_BONUS = 2         # mindestens ein gemeinsamer Vibe
+TARGET_LOCATION_BONUS = 2     # gleicher Ort
+TARGET_RECENT_FACTOR = 0.2    # war kuerzlich schon mein Target
+TARGET_RECENT_DAYS = 14
+TARGET_MAX_CANDIDATES = 200   # so viele zufaellige Kandidaten werden gewichtet
+
+
+
+
 # --- Feed-Ranking: Gewichte fuer die Score-Sortierung in get_posts ---
 # score = FEED_VOTE_WEIGHT * votes
 #       - FEED_AGE_PENALTY_PER_HOUR * alter_in_stunden
