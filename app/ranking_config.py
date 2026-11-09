@@ -35,6 +35,9 @@ TARGET_RECENT_FACTOR = 0.2    # war kuerzlich schon mein Target
 TARGET_RECENT_DAYS = 14
 TARGET_MAX_CANDIDATES = 200   # so viele zufaellige Kandidaten werden gewichtet
 
+# --- Profil-Ranking ---
+PROFILE_RANKING_DAYS = 7  # so lange nach dem Posten hinzufuegbar, so lange ab Hinzufuegen swipebar
+
 
 
 

@@ -587,6 +587,7 @@ def end_of_day_bonus(
     return {"awarded": awarded_count, "date": target_day}
 
 
+
 @router.get("/activity", response_model=list[schemas.ActivityOut])
 def get_activity(db: Session = Depends(get_dp), current_user: models.User = Depends(oauth2.get_current_user)):
     return db.query(models.Activity).filter(

@@ -30,6 +30,8 @@ class Post(Base):
     # damit der Feed nicht mehr per GROUP BY ueber die votes-Tabelle aggregieren muss.
     # server_default '0': bestehende Zeilen bekommen sofort einen gueltigen Wert.
     vote_count = Column(Integer, nullable=False, server_default=text('0'))
+    ranking_entered_on = Column(DATE, nullable=True)  # gesetzt = im Profil-Ranking, Basis der 7-Tage-Frist
+    ranking_like_count = Column(Integer, nullable=False, server_default=text('0'))
 
     owner = relationship("User")
     location = relationship("Location")
@@ -51,7 +53,6 @@ class User(Base):
     ranking_enabled = Column(Boolean, server_default='False', nullable=False)
     xp = Column(Integer, nullable=False, server_default=text('0'))
     streak_count = Column(Integer, nullable=False, server_default=text('0'))
-    last_swipe_date = Column(DATE, nullable=True)
     location_id = Column(Integer, ForeignKey("locations.id", ondelete="SET NULL"), nullable=True)
     location = relationship("Location")
     # für admin bereich relevant
@@ -59,6 +60,8 @@ class User(Base):
     banned_until = Column(TIMESTAMP(timezone=True), nullable=True)
     ban_reason = Column(String, nullable=True)
     email_verified = Column(Boolean, nullable=False, server_default='false')
+    last_swipe_date = Column(DATE, nullable=True)
+    last_ranking_entry_on = Column(DATE, nullable=True)  # Sperre: 1 Post pro Tag ins Ranking
 
 
 
@@ -151,6 +154,14 @@ class DailyBonusLog(Base):
     processed_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text('now()'))
     awarded_count = Column(Integer, nullable=False, server_default=text('0'))
 
+
+class ProfileRankingSwipe(Base):
+    __tablename__ = 'profile_ranking_swipes'
+
+    voter_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    post_id = Column(Integer, ForeignKey("posts.id", ondelete="CASCADE"), primary_key=True, index=True)
+    liked = Column(Boolean, nullable=False)
+    created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text('now()'))
 
 class Activity(Base):
     __tablename__ = 'activities'
