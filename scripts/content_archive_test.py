@@ -79,7 +79,12 @@ try:
     p2_comments = [models.Comments(user_id=u.id, post_id=post2.id, comment=f"p2 von {u.id}") for u in (b, adm)]
     p2_votes = [models.Votes(user_id=b.id, post_id=post2.id)]
     p2_scores = [models.RankingScores(voter_id=b.id, post_id=post2.id, direction=False, points=1)]
-    db.add_all(p1_comments + p1_votes + p1_scores + p2_comments + p2_votes + p2_scores)
+    # Profil-Ranking-Swipes: post1 b liked + adm uebersprungen, post2 b liked
+    p1_swipes = [models.ProfileRankingSwipe(voter_id=b.id, post_id=post1.id, liked=True),
+                 models.ProfileRankingSwipe(voter_id=adm.id, post_id=post1.id, liked=False)]
+    p2_swipes = [models.ProfileRankingSwipe(voter_id=b.id, post_id=post2.id, liked=True)]
+    db.add_all(p1_comments + p1_votes + p1_scores + p2_comments + p2_votes + p2_scores
+               + p1_swipes + p2_swipes)
     a.profile_picture_url = FAKE_URL
     db.flush()
 
@@ -105,7 +110,8 @@ try:
           and row.image_url == FAKE_URL,
           (row.target_type, row.target_id, row.owner_id, row.image_url))
     d = row.data
-    check("data hat genau die 4 Schluessel", set(d) == {"post", "comments", "votes", "ranking_scores"}, sorted(d))
+    check("data hat genau die 5 Schluessel",
+          set(d) == {"post", "comments", "votes", "ranking_scores", "profile_ranking_swipes"}, sorted(d))
     check("post: richtige Zeile, alle Spalten", d["post"]["id"] == post1_id and d["post"]["title"] == "Weg damit"
           and d["post"]["flag"] == "creativity"
           and set(d["post"]) == {c.name for c in models.Post.__table__.columns}, sorted(d["post"]))
@@ -116,7 +122,14 @@ try:
           and len(d["votes"]) == 2, d["votes"])
     check("ranking_scores: exakt die 2 von post1", {r["id"] for r in d["ranking_scores"]} == p1_score_ids
           and len(d["ranking_scores"]) == 2, [r["id"] for r in d["ranking_scores"]])
-    alle_kinder = d["comments"] + d["votes"] + d["ranking_scores"]
+    check("profile_ranking_swipes: exakt die 2 von post1, mit liked",
+          sorted((x["voter_id"], x["liked"]) for x in d["profile_ranking_swipes"])
+          == sorted([(b.id, True), (adm.id, False)]), d["profile_ranking_swipes"])
+    check("Swipes von post1 per CASCADE weg",
+          db.query(models.ProfileRankingSwipe).filter(models.ProfileRankingSwipe.post_id == post1_id).count() == 0)
+    check("Swipe von post2 bleibt",
+          db.query(models.ProfileRankingSwipe).filter(models.ProfileRankingSwipe.post_id == post2_id).count() == 1)
+    alle_kinder = d["comments"] + d["votes"] + d["ranking_scores"] + d["profile_ranking_swipes"]
     check("KEIN Kind von einem fremden Post", all(k["post_id"] == post1_id for k in alle_kinder),
           {k["post_id"] for k in alle_kinder})
     check("post2-Kinder tauchen nirgends auf",

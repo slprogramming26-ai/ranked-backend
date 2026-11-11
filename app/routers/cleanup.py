@@ -8,6 +8,7 @@ from ..config import settings
 from .. import models
 from ..database import get_dp
 from .user import delete_archived_image, SNAPSHOT_RETENTION_DAYS
+from ..ranking_config import PROFILE_RANKING_SKIP_RETENTION_DAYS
 
 router = APIRouter(
     prefix="/cleanup",
@@ -136,6 +137,27 @@ def delete_unverified_users(
         U.email_verified.is_(False),
         U.created_at < func.now() - UNVERIFIED_ACCOUNT_LIFETIME,
         ~has_valid_code,
+    ).delete(synchronize_session=False)
+
+    db.commit()
+    return {"deleted": deleted}
+
+
+@router.delete("/profile_ranking_skips")
+def delete_profile_ranking_skips(
+    db: Session = Depends(get_dp),
+    x_cleanup_secret: Optional[str] = Header(default=None),
+):
+    """Loescht Ueberspringen-Zeilen aus dem Profil-Ranking, sobald der Post sicher abgelaufen ist.
+    Likes bleiben (sie SIND der Zaehler). Wird 1x täglich vom externen Scheduler aufgerufen."""
+    if x_cleanup_secret != settings.story_cleanup_secret:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid cleanup secret")
+
+    S = models.ProfileRankingSwipe
+    # EIN DELETE. Kein Zaehler betroffen: ranking_like_count zaehlt nur liked = True.
+    deleted = db.query(S).filter(
+        S.liked.is_(False),
+        S.created_at < func.now() - timedelta(days=PROFILE_RANKING_SKIP_RETENTION_DAYS),
     ).delete(synchronize_session=False)
 
     db.commit()

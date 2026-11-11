@@ -171,18 +171,25 @@ def _restore_post(db: Session, archived: models.RemovedContent, extra: dict):
     if drop_location:
         extra["location_dropped"] = True
 
-    # || verschmilzt zwei JSON-Objekte, rechts gewinnt -> ueberschreibt nur location_id
+    # || verschmilzt JSON-Objekte, rechts gewinnt:
+    #   links  = Standardwerte fuer Spalten, die alte Archivzeilen noch nicht kennen
+    #            (fehlender Schluessel -> NULL -> NOT NULL knallt); der Zaehler wird unten eh neu gezaehlt
+    #   mitte  = der archivierte Post
+    #   rechts = ueberschreibt nur location_id
     db.execute(text("""
         INSERT INTO posts
         SELECT * FROM jsonb_populate_record(NULL::posts,
-            (SELECT data -> 'post' FROM removed_content WHERE id = :rc_id)
+            '{"ranking_like_count": 0}'::jsonb
+            || (SELECT data -> 'post' FROM removed_content WHERE id = :rc_id)
             || CASE WHEN CAST(:drop_location AS boolean)
                     THEN '{"location_id": null}'::jsonb ELSE '{}'::jsonb END)
     """), {**params, "drop_location": drop_location})
 
     # Kinder: der JSON-Schluessel heisst wie die Tabelle. Nur Zeilen zurueck, deren User
     # noch existiert - sonst wuerde der FK den ganzen Restore scheitern lassen.
-    for table, user_col in (("comments", "user_id"), ("votes", "user_id"), ("ranking_scores", "voter_id")):
+    # Alte Archivzeilen ohne 'profile_ranking_swipes': data -> '...' ist NULL -> 0 Zeilen.
+    for table, user_col in (("comments", "user_id"), ("votes", "user_id"), ("ranking_scores", "voter_id"),
+                            ("profile_ranking_swipes", "voter_id")):
         db.execute(text(f"""
             INSERT INTO {table}
             SELECT r.* FROM jsonb_populate_recordset(NULL::{table},
@@ -190,9 +197,13 @@ def _restore_post(db: Session, archived: models.RemovedContent, extra: dict):
             WHERE EXISTS (SELECT 1 FROM users u WHERE u.id = r.{user_col})
         """), params)
 
-    # Der alte Zaehler kam mit dem Post zurueck; Votes geloeschter User fehlen aber -> neu zaehlen
+    # Die alten Zaehler kamen mit dem Post zurueck; Votes/Likes geloeschter User fehlen aber
+    # -> beide neu zaehlen, in EINER Anweisung
     db.execute(text("""
-        UPDATE posts SET vote_count = (SELECT count(*) FROM votes WHERE post_id = :post_id)
+        UPDATE posts SET
+            vote_count = (SELECT count(*) FROM votes WHERE post_id = :post_id),
+            ranking_like_count = (SELECT count(*) FROM profile_ranking_swipes
+                                  WHERE post_id = :post_id AND liked)
         WHERE id = :post_id
     """), params)
 
@@ -438,7 +449,8 @@ POST_ARCHIVE_SQL = """
         'post', to_jsonb(p),
         'comments', (SELECT coalesce(jsonb_agg(to_jsonb(c)), '[]'::jsonb) FROM comments c WHERE c.post_id = p.id),
         'votes', (SELECT coalesce(jsonb_agg(to_jsonb(v)), '[]'::jsonb) FROM votes v WHERE v.post_id = p.id),
-        'ranking_scores', (SELECT coalesce(jsonb_agg(to_jsonb(r)), '[]'::jsonb) FROM ranking_scores r WHERE r.post_id = p.id))
+        'ranking_scores', (SELECT coalesce(jsonb_agg(to_jsonb(r)), '[]'::jsonb) FROM ranking_scores r WHERE r.post_id = p.id),
+        'profile_ranking_swipes', (SELECT coalesce(jsonb_agg(to_jsonb(s)), '[]'::jsonb) FROM profile_ranking_swipes s WHERE s.post_id = p.id))
     FROM posts p WHERE p.id = :target_id"""
 COMMENT_ARCHIVE_SQL = "SELECT to_jsonb(c) FROM comments c WHERE c.id = :target_id"
 STORY_ARCHIVE_SQL = "SELECT to_jsonb(s) FROM stories s WHERE s.id = :target_id"
@@ -459,7 +471,7 @@ def remove_post(id: int, remove: schemas.ContentRemove, db: Session = Depends(da
                                   content_snapshot=f"{post.title}\n\n{post.content}")
 
     _archive(db, action_row, "post", post.owner_id, post.id, post.image_url, POST_ARCHIVE_SQL)
-    db.delete(post)  # CASCADE: Votes, Kommentare, ranking_scores (stehen jetzt im Archiv)
+    db.delete(post)  # CASCADE: Votes, Kommentare, ranking_scores, Profil-Swipes (stehen jetzt im Archiv)
     db.commit()
 
     return Response(status_code=status.HTTP_204_NO_CONTENT)

@@ -37,6 +37,9 @@ TARGET_MAX_CANDIDATES = 200   # so viele zufaellige Kandidaten werden gewichtet
 
 # --- Profil-Ranking ---
 PROFILE_RANKING_DAYS = 7  # so lange nach dem Posten hinzufuegbar, so lange ab Hinzufuegen swipebar
+# Ueberspringen-Zeilen braucht nur /open ("schon gesehen"). Ein Swipe passiert innerhalb der
+# 7-Tage-Frist -> spaetestens 7 Tage danach ist der Post abgelaufen. 14 = doppelter Puffer.
+PROFILE_RANKING_SKIP_RETENTION_DAYS = 14
 
 
 

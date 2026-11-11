@@ -57,9 +57,27 @@ CREATE TABLE daily_targets (
 	voter_id INTEGER NOT NULL, 
 	target_user_id INTEGER NOT NULL, 
 	date DATE DEFAULT now() NOT NULL, 
+	rerolls INTEGER DEFAULT 0 NOT NULL, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(voter_id) REFERENCES users (id) ON DELETE CASCADE, 
 	FOREIGN KEY(target_user_id) REFERENCES users (id) ON DELETE CASCADE
+)
+
+
+
+-- TABELLE email_codes
+
+CREATE TABLE email_codes (
+	id SERIAL NOT NULL, 
+	user_id INTEGER NOT NULL, 
+	purpose email_code_purpose NOT NULL, 
+	code_hash VARCHAR NOT NULL, 
+	attempts INTEGER DEFAULT 0 NOT NULL, 
+	expires_at TIMESTAMP WITH TIME ZONE NOT NULL, 
+	created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	PRIMARY KEY (id), 
+	UNIQUE (user_id, purpose), 
+	FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE CASCADE
 )
 
 
@@ -149,7 +167,9 @@ CREATE TABLE group_chat_memberships (
 	group_chat_id INTEGER NOT NULL, 
 	participant_id INTEGER NOT NULL, 
 	joined_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	role VARCHAR DEFAULT 'member' NOT NULL, 
 	PRIMARY KEY (group_chat_id, participant_id), 
+	CONSTRAINT ck_group_chat_memberships_role CHECK (role IN ('member', 'admin')), 
 	FOREIGN KEY(group_chat_id) REFERENCES group_chats (group_chat_id) ON DELETE CASCADE, 
 	FOREIGN KEY(participant_id) REFERENCES users (id) ON DELETE CASCADE
 )
@@ -280,9 +300,25 @@ CREATE TABLE posts (
 	flag VARCHAR, 
 	location_id INTEGER, 
 	vote_count INTEGER DEFAULT 0 NOT NULL, 
+	ranking_entered_on DATE, 
+	ranking_like_count INTEGER DEFAULT 0 NOT NULL, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(owner_id) REFERENCES users (id) ON DELETE CASCADE, 
 	FOREIGN KEY(location_id) REFERENCES locations (id) ON DELETE SET NULL
+)
+
+
+
+-- TABELLE profile_ranking_swipes
+
+CREATE TABLE profile_ranking_swipes (
+	voter_id INTEGER NOT NULL, 
+	post_id INTEGER NOT NULL, 
+	liked BOOLEAN NOT NULL, 
+	created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	PRIMARY KEY (voter_id, post_id), 
+	FOREIGN KEY(voter_id) REFERENCES users (id) ON DELETE CASCADE, 
+	FOREIGN KEY(post_id) REFERENCES posts (id) ON DELETE CASCADE
 )
 
 
@@ -405,11 +441,13 @@ CREATE TABLE users (
 	ranking_enabled BOOLEAN DEFAULT 'False' NOT NULL, 
 	xp INTEGER DEFAULT 0 NOT NULL, 
 	streak_count INTEGER DEFAULT 0 NOT NULL, 
-	last_swipe_date DATE, 
 	location_id INTEGER, 
 	role user_roles DEFAULT 'user' NOT NULL, 
 	banned_until TIMESTAMP WITH TIME ZONE, 
 	ban_reason VARCHAR, 
+	email_verified BOOLEAN DEFAULT 'false' NOT NULL, 
+	last_swipe_date DATE, 
+	last_ranking_entry_on DATE, 
 	PRIMARY KEY (id), 
 	UNIQUE (email), 
 	UNIQUE (username), 
@@ -431,7 +469,7 @@ CREATE TABLE votes (
 
 
 -- QUERY feed
-SELECT posts.id, posts.title, posts.content, posts.created_at, posts.owner_id, posts.image_url, posts.flag, posts.location_id, posts.vote_count 
+SELECT posts.id, posts.title, posts.content, posts.created_at, posts.owner_id, posts.image_url, posts.flag, posts.location_id, posts.vote_count, posts.ranking_entered_on, posts.ranking_like_count 
 FROM posts 
 WHERE (posts.title LIKE '%%' || %(title_1)s || '%%') AND (posts.id NOT IN (__[POSTCOMPILE_id_1])) AND posts.created_at >= %(created_at_1)s ORDER BY (%(vote_count_1)s * posts.vote_count - %(param_1)s * (EXTRACT(epoch FROM now() - posts.created_at) / CAST(%(param_2)s AS NUMERIC))) + CASE WHEN (EXISTS (SELECT 1 
 FROM follows 

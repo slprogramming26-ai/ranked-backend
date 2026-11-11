@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator, field_validator, BeforeValidator
 from typing import Optional, Literal, List, Annotated
 
@@ -85,6 +85,7 @@ class GetUserOut(BaseModel):
     location: Optional[LocationOut] = None
     ranking_enabled: bool
     follower_count: Optional[int] = None
+    ranking_likes_total: Optional[int] = None
     is_followed: Optional[bool] = None
     # Gamification. Optional, weil /users/search dieselbe Schema-Klasse nutzt,
     # dort aber (bewusst) keine Liga/XP mitliefert -> bleibt dann None.
@@ -421,6 +422,25 @@ class CommentOut(BaseModel):
 class SwipeIn(BaseModel):
     post_id: int = Field(gt=0, description="ID des bewerteten Posts")
     direction: bool  # True = Rechts/Cool, False = Links/Nicht cool
+
+
+class ProfileRankingOpenOut(BaseModel):
+    # can_swipe=False: eigenes Profil, kein Follower, Block oder Besitzer gesperrt.
+    # posts ist dann immer leer. Bewusst ohne Like-Zahl: erst swipen, dann sehen.
+    can_swipe: bool
+    posts: List[Post]
+
+
+class ProfileRankingPostOut(BaseModel):
+    # Ein Post im Ranking-Tab. Nur ansehen, swipen läuft über /open + /swipes.
+    post: Post
+    ranking_like_count: int
+    ranking_entered_on: date
+    is_active: bool  # vom Server in UTC berechnet: noch in der 7-Tage-Frist
+    # True = geliked, False = übersprungen, None = nicht geswipt.
+    # Überspringen-Zeilen räumt der Cleanup nach 14 Tagen weg -> dann wieder None
+    # (betrifft nur längst abgelaufene Posts).
+    my_swipe: Optional[bool] = None
 
 
 class SwipeSession(BaseModel):

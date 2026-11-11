@@ -202,7 +202,24 @@ def create_user(request: Request, user: schemas.UserCreate, background_tasks: Ba
 @router.get("/", response_model=schemas.GetUserOut)
 def get_current_user(current_user: int = Depends(oauth2.get_current_user),  db: Session = Depends(get_dp)):
 
-    follower_count = db.query(models.Follows).filter(models.Follows.followee_id == current_user.id).count()
+    likes_total = (
+        db.query(func.coalesce(func.sum(models.Post.ranking_like_count), 0))
+        .filter(models.Post.owner_id == current_user.id)
+        .scalar_subquery()
+    )
+
+    follower_count = (
+        db.query(func.count())
+        .filter(models.Follows.followee_id == current_user.id)
+        .scalar_subquery()
+    )
+
+    # Kein models.User davor: wir holen NUR die zwei Zahlen, in einer Anweisung.
+    zahlen = db.query(
+        follower_count.label("follower_count"),
+        likes_total.label("likes_total"),
+    ).one()
+
 
     return {"id": current_user.id,
         "email": current_user.email,
@@ -213,7 +230,8 @@ def get_current_user(current_user: int = Depends(oauth2.get_current_user),  db: 
             "biography": current_user.biography,
             "location": current_user.location,
             "ranking_enabled": current_user.ranking_enabled,
-            "follower_count": follower_count,
+            "follower_count": zahlen.follower_count,
+            "ranking_likes_total": zahlen.likes_total,
             "xp": current_user.xp,
             "streak_count": get_effective_streak(current_user.streak_count, current_user.last_swipe_date),
             "league": get_league(current_user.xp),
@@ -330,18 +348,41 @@ def get_my_moderation(limit: int = Query(50, ge=1, le=200), skip: int = Query(0,
 
 @router.get("/{id}", response_model=schemas.GetUserOut)
 def get_user(id: int, current_user: int = Depends(oauth2.get_current_user),  db: Session = Depends(get_dp)):
-
-    target_user = db.query(models.User).filter(models.User.id == id).first()
-
-    if not target_user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"User with id: {id} was not found")
     
-    follower_count = db.query(models.Follows).filter(models.Follows.followee_id == id).count()
-    follow_query = db.query(models.Follows).filter(models.Follows.followee_id == id, models.Follows.follower_id == current_user.id).first()
-    following = False
+    # Summe aller Profil-Ranking-Likes dieses Users. Wird noch NICHT ausgeführt,
+    # sondern nur als Baustein beschrieben (scalar_subquery).
+    likes_total = (
+        db.query(func.coalesce(func.sum(models.Post.ranking_like_count), 0))
+        .filter(models.Post.owner_id == id)
+        .scalar_subquery()
+    )
 
-    if follow_query:
-        following = True
+    follower_count = (
+        db.query(func.count())
+        .filter(models.Follows.followee_id == id)
+        .scalar_subquery()
+    )
+
+    ich_folge = (
+        db.query(models.Follows)
+        .filter(models.Follows.followee_id == id, models.Follows.follower_id == current_user.id)
+        .exists()
+    )
+
+
+    # EINE Anweisung: User + die drei Bausteine als zusätzliche Spalten.
+    zeile = db.query(
+        models.User,
+        follower_count.label("follower_count"),
+        likes_total.label("likes_total"),
+        ich_folge.label("ich_folge"),
+    ).filter(models.User.id == id).first()
+
+    if not zeile:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"User with id: {id} was not found")
+
+    target_user = zeile.User
+
 
 
 
@@ -352,8 +393,9 @@ def get_user(id: int, current_user: int = Depends(oauth2.get_current_user),  db:
             "profile_picture_url": target_user.profile_picture_url,
             "biography": target_user.biography,
             "ranking_enabled": target_user.ranking_enabled,
-            "follower_count": follower_count,
-            "is_followed": following,
+            "follower_count": zeile.follower_count,
+            "ranking_likes_total": zeile.likes_total,
+            "is_followed": zeile.ich_folge,
             "xp": target_user.xp,
             "streak_count": get_effective_streak(target_user.streak_count, target_user.last_swipe_date),
             "league": get_league(target_user.xp),
@@ -469,6 +511,18 @@ def _delete_user_data(current_user: models.User, db: Session):
             {models.Post.vote_count: models.Post.vote_count - 1},
             synchronize_session=False,
         )
+
+    # 3b. Dasselbe fuer Profil-Ranking-Likes. Auch auf abgelaufenen Posts abziehen: der Zaehler
+    # soll immer = Anzahl liked-Zeilen sein (der Restore zaehlt genauso neu).
+    # Unterabfrage statt ID-Liste -> EIN UPDATE, kein extra SELECT.
+    my_liked_post_ids = db.query(models.ProfileRankingSwipe.post_id).filter(
+        models.ProfileRankingSwipe.voter_id == current_user.id,
+        models.ProfileRankingSwipe.liked.is_(True),
+    )
+    db.query(models.Post).filter(models.Post.id.in_(my_liked_post_ids)).update(
+        {models.Post.ranking_like_count: models.Post.ranking_like_count - 1},
+        synchronize_session=False,
+    )
 
     # 4. User aus DB löschen -> CASCADE räumt posts/votes/comments automatisch auf
     db.query(models.User).filter(models.User.id == current_user.id) \

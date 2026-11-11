@@ -2,6 +2,8 @@
 -> alles wieder da, mit denselben IDs. Dazu die Sonderfaelle (geloeschter Voter, geloeschter Ort,
 409er, doppelter Restore). Laeuft gegen die ECHTE DB, komplett in einer Transaktion, die am Ende
 zurueckgerollt wird (gleiches Muster wie content_archive_test.py).
+Dazu Profil-Ranking: Swipes kommen zurueck, ranking_like_count wird neu gezaehlt, und eine
+Archivzeile im ALTEN Format (vor der Profil-Ranking-Migration) laesst sich wiederherstellen.
 
 S3: die drei delete_s3_object-Funktionen sind durch Spione ersetzt (vor dem admin-Import).
 Weder Entfernen noch Wiederherstellen darf sie aufrufen.
@@ -17,6 +19,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from fastapi import HTTPException  # noqa: E402
+from sqlalchemy import text  # noqa: E402
 from sqlalchemy.orm import Session  # noqa: E402
 
 from app import models, schemas  # noqa: E402
@@ -91,12 +94,15 @@ try:
     # ------------------------------------------------------------------
     print("\n1) Post komplett zurueck (nichts hat sich geaendert)")
     pa = models.Post(title="Post A", content="Inhalt A", owner_id=a.id, image_url=FAKE_URL,
-                     flag="engagement", vote_count=2)
+                     flag="engagement", vote_count=2,
+                     ranking_entered_on=datetime.now(timezone.utc).date(), ranking_like_count=1)
     db.add(pa)
     db.flush()
     pa_comments = [models.Comments(user_id=u.id, post_id=pa.id, comment=f"A von {u.id}") for u in (b, adm)]
     pa_scores = [models.RankingScores(voter_id=b.id, post_id=pa.id, direction=True, points=4)]
-    db.add_all(pa_comments + pa_scores
+    pa_swipes = [models.ProfileRankingSwipe(voter_id=b.id, post_id=pa.id, liked=True),
+                 models.ProfileRankingSwipe(voter_id=adm.id, post_id=pa.id, liked=False)]
+    db.add_all(pa_comments + pa_scores + pa_swipes
                + [models.Votes(user_id=u.id, post_id=pa.id) for u in (b, adm)])
     db.flush()
     db.refresh(pa)  # created_at aus der DB holen, damit der Vergleich alle Spalten hat
@@ -104,6 +110,9 @@ try:
     pa_vorher = spalten(pa)
     pa_comments_vorher = {c.id: spalten(c) for c in pa_comments}
     pa_scores_vorher = {r.id: spalten(r) for r in pa_scores}
+    for sw in pa_swipes:
+        db.refresh(sw)  # created_at aus der DB
+    pa_swipes_vorher = {(sw.voter_id, sw.post_id): spalten(sw) for sw in pa_swipes}
 
     admin.remove_post(pa_id, GRUND, db=db, current_user=mod)
     db.expire_all()
@@ -129,6 +138,12 @@ try:
     scores_neu = {r.id: spalten(r) for r in db.query(models.RankingScores).filter(models.RankingScores.post_id == pa_id)}
     check("ranking_scores: gleiche IDs, gleiche Werte", scores_neu == pa_scores_vorher)
     check("vote_count = 2", pa_neu.vote_count == 2, pa_neu.vote_count)
+    swipes_neu = {(sw.voter_id, sw.post_id): spalten(sw)
+                  for sw in db.query(models.ProfileRankingSwipe).filter(models.ProfileRankingSwipe.post_id == pa_id)}
+    check("Profil-Swipes: alle Werte gleich (liked + created_at)", swipes_neu == pa_swipes_vorher)
+    check("ranking_like_count = 1, ranking_entered_on gleich",
+          pa_neu.ranking_like_count == 1 and pa_neu.ranking_entered_on == pa_vorher["ranking_entered_on"],
+          (pa_neu.ranking_like_count, pa_neu.ranking_entered_on))
     check("Archivzeile weg", not archiv_da(remove_id))
 
     erwarte_fehler("Zweiter Restore derselben Aktion -> 404", 404, lambda: restore(remove_id))
@@ -136,7 +151,8 @@ try:
 
     # ------------------------------------------------------------------
     print("\n2) Post zurueck, waehrenddessen Voter + Ort geloescht")
-    pb = models.Post(title="Post B", content="Inhalt B", owner_id=a.id, location_id=loc.id, vote_count=2)
+    pb = models.Post(title="Post B", content="Inhalt B", owner_id=a.id, location_id=loc.id, vote_count=2,
+                     ranking_entered_on=datetime.now(timezone.utc).date(), ranking_like_count=2)
     db.add(pb)
     db.flush()
     pb_id = pb.id
@@ -145,7 +161,10 @@ try:
                 models.Comments(user_id=tmp.id, post_id=pb_id, comment="von tmp"),
                 models.Votes(user_id=b.id, post_id=pb_id),
                 models.Votes(user_id=tmp.id, post_id=pb_id),
-                models.RankingScores(voter_id=tmp.id, post_id=pb_id, direction=False, points=1)])
+                models.RankingScores(voter_id=tmp.id, post_id=pb_id, direction=False, points=1),
+                models.ProfileRankingSwipe(voter_id=b.id, post_id=pb_id, liked=True),
+                models.ProfileRankingSwipe(voter_id=tmp.id, post_id=pb_id, liked=True),
+                models.ProfileRankingSwipe(voter_id=adm.id, post_id=pb_id, liked=False)])
     db.flush()
     b_comment_id = b_comment.id
 
@@ -168,6 +187,11 @@ try:
     check("tmp's ranking_score nicht zurueck",
           db.query(models.RankingScores).filter(models.RankingScores.post_id == pb_id).count() == 0)
     check("vote_count neu gezaehlt: 1 statt 2", pb_neu.vote_count == 1, pb_neu.vote_count)
+    check("Profil-Swipes: b + adm zurueck, tmp nicht",
+          sorted((sw.voter_id, sw.liked) for sw in db.query(models.ProfileRankingSwipe)
+                 .filter(models.ProfileRankingSwipe.post_id == pb_id)) == sorted([(b.id, True), (adm.id, False)]))
+    check("ranking_like_count neu gezaehlt: 1 statt 2 (Ueberspringen zaehlt nicht)",
+          pb_neu.ranking_like_count == 1, pb_neu.ranking_like_count)
 
     # ------------------------------------------------------------------
     print("\n3) Kommentar")
@@ -242,6 +266,46 @@ try:
                    lambda: admin.require_admin(current_user=mod))
     erwarte_fehler("Unbekannte Aktion -> 404", 404, lambda: restore(999999999))
     db.rollback()
+
+    # ------------------------------------------------------------------
+    print("\n8) Archivzeile im ALTEN Format (vor der Profil-Ranking-Migration)")
+    pd = models.Post(title="Post D", content="alt", owner_id=a.id, vote_count=1)
+    db.add(pd)
+    db.flush()
+    pd_id = pd.id
+    db.add(models.Votes(user_id=b.id, post_id=pd_id))
+    db.flush()
+    admin.remove_post(pd_id, GRUND, db=db, current_user=mod)
+    remove_id = letzte_action_id("delete_post")
+    # So sahen Archivzeilen vorher aus: die zwei neuen Post-Spalten und der Swipe-Schluessel fehlen
+    db.execute(text("""
+        UPDATE removed_content
+        SET data = jsonb_set(data, '{post}', (data -> 'post') - 'ranking_like_count' - 'ranking_entered_on')
+                   - 'profile_ranking_swipes'
+        WHERE moderation_action_id = :aid
+    """), {"aid": remove_id})
+    db.flush()
+    alt_data = db.query(RC.data).filter(RC.moderation_action_id == remove_id).scalar()
+    check("Vorbereitung: Archiv wirklich im alten Format",
+          "ranking_like_count" not in alt_data["post"] and "ranking_entered_on" not in alt_data["post"]
+          and "profile_ranking_swipes" not in alt_data, sorted(alt_data))
+
+    out = None
+    try:
+        out = restore(remove_id)
+    except Exception as e:  # noqa: BLE001 - genau das soll NICHT passieren
+        db.rollback()
+        check("Restore laeuft durch", False, f"{type(e).__name__}: {str(e)[:200]}")
+    if out is not None:
+        pd_neu = db.get(models.Post, pd_id)
+        check("Restore laeuft durch", pd_neu is not None)
+        check("ranking_like_count = 0, ranking_entered_on = None",
+              pd_neu.ranking_like_count == 0 and pd_neu.ranking_entered_on is None,
+              (pd_neu.ranking_like_count, pd_neu.ranking_entered_on))
+        check("vote_count + Vote trotzdem zurueck", pd_neu.vote_count == 1
+              and db.query(models.Votes).filter(models.Votes.post_id == pd_id).count() == 1)
+        check("keine Profil-Swipes", db.query(models.ProfileRankingSwipe)
+              .filter(models.ProfileRankingSwipe.post_id == pd_id).count() == 0)
 
     print("\n7) Gesamtbild")
     check("S3 nie angefasst", s3_aufrufe == [], s3_aufrufe)
