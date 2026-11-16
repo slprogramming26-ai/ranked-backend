@@ -431,6 +431,13 @@ class ProfileRankingOpenOut(BaseModel):
     posts: List[Post]
 
 
+class ProfileRankingSlotOut(BaseModel):
+    # free=True: heute (UTC) noch kein Post im Ranking.
+    # next_free_at: nächster 00:00 UTC, immer dabei (auch bei free=True).
+    free: bool
+    next_free_at: datetime
+
+
 class ProfileRankingPostOut(BaseModel):
     # Ein Post im Ranking-Tab. Nur ansehen, swipen läuft über /open + /swipes.
     post: Post

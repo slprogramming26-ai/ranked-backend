@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
 import redis
-from sqlalchemy import case, func, or_
+from sqlalchemy import and_, case, func, or_
 from sqlalchemy.orm import Session, joinedload
 
 from . import models
@@ -83,6 +83,20 @@ def _ich_habe_gemeldet(db: Session, current_user: models.User):
     ).exists()
 
 
+def _block_besteht(db: Session, current_user: models.User):
+    """Block in BEIDE Richtungen zwischen mir und dem Autor des Posts.
+
+    Gleiches Muster wie _erlaubte_kandidaten in ranking.py, nur gegen
+    Post.owner_id statt User.id. Als EXISTS in derselben Anweisung: kein
+    eigener Rundweg. Richtung 1 nutzt den PK (blocker_id, blocked_id),
+    Richtung 2 den Index auf blocked_id. Der Aufrufer schreibt das `~` davor.
+    """
+    return db.query(models.Block).filter(or_(
+        and_(models.Block.blocker_id == current_user.id, models.Block.blocked_id == models.Post.owner_id),
+        and_(models.Block.blocker_id == models.Post.owner_id, models.Block.blocked_id == current_user.id),
+    )).exists()
+
+
 def _zusatz_spalten(db: Session, current_user: models.User):
     """Die drei Spalten, die neben dem Post mitkommen — als Ausdruecke.
 
@@ -123,11 +137,12 @@ def _kandidaten_holen(db: Session,
 
     
     ich_habe_gemeldet = _ich_habe_gemeldet(db, current_user)
+    block_besteht = _block_besteht(db, current_user)
     ich_habe_gevotet, i_follow_owner, kommentar_anzahl = _zusatz_spalten(db, current_user)
 
-    
-    
-    
+
+
+
         # Denormalisierter Zaehler auf posts — kein JOIN/GROUP BY ueber votes mehr.
         # Geschrieben wird er atomar in vote.py, die votes-Tabelle bleibt Quelle der Wahrheit.
     vote_count = models.Post.vote_count
@@ -157,7 +172,8 @@ def _kandidaten_holen(db: Session,
     
     posts_query = db.query(models.Post) \
     .filter(models.Post.title.contains(search)) \
-    .filter(~ich_habe_gemeldet)
+    .filter(~ich_habe_gemeldet) \
+    .filter(~block_besteht)
     
     
     if local:
@@ -191,8 +207,9 @@ def _posts_nach_ids(db: Session, current_user: models.User, post_ids: List[int])
     Zeilen in beliebiger Folge liefern, die Lytir-Reihenfolge steht in der
     ID-Liste des Aufrufers.
 
-    IDs, zu denen nichts kommt, fehlen im Dict — Post geloescht oder in den
-    letzten Minuten von mir gemeldet. Der Aufrufer laesst sie einfach aus.
+    IDs, zu denen nichts kommt, fehlen im Dict — Post geloescht, in den
+    letzten Minuten von mir gemeldet oder Block mit dem Autor. Der Aufrufer
+    laesst sie einfach aus.
     """
     # Leere Liste: sofort zurueck. `IN ()` waere eine sinnlose Anweisung,
     # und jede Anweisung kostet ~15 ms Rundweg.
@@ -200,11 +217,13 @@ def _posts_nach_ids(db: Session, current_user: models.User, post_ids: List[int])
         return {}
 
     ich_habe_gemeldet = _ich_habe_gemeldet(db, current_user)
+    block_besteht = _block_besteht(db, current_user)
     ich_habe_gevotet, i_follow_owner, kommentar_anzahl = _zusatz_spalten(db, current_user)
 
     zeilen = db.query(models.Post) \
         .filter(models.Post.id.in_(post_ids)) \
         .filter(~ich_habe_gemeldet) \
+        .filter(~block_besteht) \
         .add_columns(
             ich_habe_gevotet.label("is_liked"),
             i_follow_owner.label("i_follow_owner"),

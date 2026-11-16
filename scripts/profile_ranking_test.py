@@ -817,6 +817,42 @@ try:
     out = cleanup.delete_profile_ranking_skips(db=db, x_cleanup_secret=settings.story_cleanup_secret)
     check("zweiter Lauf -> deleted 0", out == {"deleted": 0}, f"({out})")
 
+    # ---------------------------------------------------------------
+    print("\n[44] GET /profile_ranking/slot")
+    pfade = {(r.path, m) for r in app.routes for m in getattr(r, "methods", set())}
+    check("GET /profile_ranking/slot existiert", ("/profile_ranking/slot", "GET") in pfade)
+
+    morgen_0_uhr = datetime.combine(HEUTE + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc)
+    s = neuer_user("slot")
+
+    def slot(user):
+        db.expire_all()
+        user = db.get(models.User, user.id)
+        return schemas.ProfileRankingSlotOut.model_validate(profile_ranking.ranking_slot(current_user=user))
+
+    out = slot(s)
+    check("nie eingestellt -> free=true", out.free is True, f"({out})")
+    check("next_free_at = morgen 00:00 UTC", out.next_free_at == morgen_0_uhr, f"({out.next_free_at})")
+    json_text = out.model_dump_json()
+    erwartet = f'"next_free_at":"{(HEUTE + timedelta(days=1)).isoformat()}T00:00:00Z"'
+    check("JSON-Format ...T00:00:00Z", erwartet in json_text, f"({json_text})")
+
+    sperre_setzen(s, HEUTE)
+    out = slot(s)
+    check("heute eingestellt -> free=false", out.free is False, f"({out})")
+    check("  ... next_free_at trotzdem dabei", out.next_free_at == morgen_0_uhr)
+
+    sperre_setzen(s, GESTERN)
+    check("gestern eingestellt -> free=true", slot(s).free is True)
+
+    sperre_setzen(s, HEUTE + timedelta(days=1))
+    check("Sperre in der Zukunft -> free=false (wie POST)", slot(s).free is False)
+
+    # Echter Ablauf: POST belegt den Platz, danach meldet /slot belegt.
+    sperre_setzen(s, None)
+    code, _ = hinzufuegen(neuer_post(s).id, s)
+    check("POST 201, danach free=false", code == 201 and slot(s).free is False, f"({code})")
+
 finally:
     db.close()
     outer.rollback()

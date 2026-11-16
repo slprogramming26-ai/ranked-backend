@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -45,6 +45,19 @@ def add_post_to_ranking(post_id: int, db: Session = Depends(get_dp), current_use
     post.ranking_entered_on = heute
     db.commit()
     return {"post_id": post.id, "ranking_entered_on": heute}
+
+
+@router.get("/slot", response_model=schemas.ProfileRankingSlotOut)
+def ranking_slot(current_user: models.User = Depends(oauth2.get_current_user)):
+    """Darf ich heute noch einen Post ins Ranking stellen? Nur lesen, kein Lock.
+    Gleiche Bedingung wie das UPDATE in add_post_to_ranking. Ein Rennen zwischen
+    zwei Geräten fängt dort weiterhin der 409 ab."""
+    heute = datetime.now(timezone.utc).date()
+    letzter = current_user.last_ranking_entry_on
+    return {
+        "free": letzter is None or letzter < heute,
+        "next_free_at": datetime.combine(heute + timedelta(days=1), time.min, tzinfo=timezone.utc),
+    }
 
 def _post_mit_pruefungen(db, current_user, post_id):
     """Post plus Follow- und Block-Prüfung in EINER Anweisung."""
