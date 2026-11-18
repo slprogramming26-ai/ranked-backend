@@ -59,6 +59,9 @@ class UserDetails(BaseModel):
     biography: Optional[str] = None
     ranking_enabled: Optional[bool] = None
     location_id: Optional[int] = None
+    personalized_feed: Optional[bool] = None
+    impressions_enabled: Optional[bool] = None
+
 
 
 
@@ -71,6 +74,7 @@ class LeagueOut(BaseModel):
     xp_into_league: int
     league_span: int
     xp_for_next: int
+
 
 
 
@@ -95,6 +99,9 @@ class GetUserOut(BaseModel):
     # Nur bei GET /users/ (eigenes Profil) gesetzt -> App blendet den Admin-Bereich ein.
     # Fremde Profile/Suche lassen es None: wer Mod ist, geht andere nichts an.
     role: Optional[str] = None
+    # Nur bei GET /users/ (eigenes Profil) gesetzt, wie role.
+    personalized_feed: Optional[bool] = None
+    impressions_enabled: Optional[bool] = None
 
     model_config = ConfigDict(from_attributes=True)
 

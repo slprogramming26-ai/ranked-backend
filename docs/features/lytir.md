@@ -50,6 +50,28 @@ Ein Like sagt „gefällt mir“. Was dem Modell sonst fehlt, ist das Gegenteil:
 weitergescrollt.** Ohne diese Zeilen gäbe es nur positive Beispiele, und das Netz lernt nichts
 Unterscheidbares. Deshalb meldet die App, welche Posts wirklich auf dem Bildschirm waren.
 
+### Nur mit Einwilligung
+
+Gespeichert wird nur, wenn `users.impressions_enabled` an ist. Standard ist **aus** (Opt-in,
+Art. 6 Abs. 1 lit. a DSGVO). Was jemand wie lange angeschaut hat, ist ein feines
+Verhaltensprotokoll, das für den Betrieb der App nicht nötig ist, nur fürs Training.
+
+- **Schalter aus:** `POST /impressions/` antwortet sofort **204** und schreibt nichts. Kein
+  Fehlercode, weil die App fire-and-forget schickt und ihn ohnehin ignorieren würde. Die Prüfung
+  steht ganz oben, deshalb fallen auch die drei Abfragen für den Snapshot weg.
+- **Ausschalten = Widerruf:** `PUT /users/` mit `{"impressions_enabled": false}` löscht in
+  **derselben Transaktion** alle `feed_impressions` dieses Users (Art. 7 Abs. 3, Art. 17 Abs. 1
+  lit. b). Gelöscht wird nur bei echtem `false`. Fehlt das Feld oder ist es `null`, passiert nichts.
+  Sonst würde jede Änderung der Bio die Daten löschen.
+- **Lesen:** `GET /users/` liefert `impressions_enabled`, nur fürs eigene Profil.
+- **Randfall:** Ein Batch, der die Prüfung schon hinter sich hat, während in denselben
+  Millisekunden das Ausschalten committet, landet noch in der Tabelle. Ab dem nächsten Batch ist
+  Schluss. Absichern ginge nur mit einer Sperre auf die User-Zeile. Das ist es nicht wert.
+
+Der Schalter ist unabhängig von `personalized_feed` (siehe
+[feed.md, Abschnitt 7](feed.md#7-personalisierung-abschalten-personalized_feed)). Lytir liest beim
+Sortieren keine Impressions, sie sind nur Trainingsdaten.
+
 ### Was die App schickt
 
 Alle 10 Sekunden oder wenn in der App ein Auslöser feuert („Gate-Flush“) einen Batch:
@@ -317,5 +339,9 @@ zwei Implementierungen derselben Rechnung können auseinanderlaufen.
 - `training/export.py` prüft beim Export selbst, dass ONNX und JSON dasselbe rechnen wie PyTorch.
 - `training/label_check.py` ist kein Test, sondern eine Tabelle zum Draufschauen, wenn man an den
   Label-Zahlen dreht.
-- Für `POST /impressions/` gibt es kein eigenes Testskript. Das Upsert-SQL steht im
+- Für das Upsert in `POST /impressions/` gibt es kein eigenes Testskript. Das SQL steht im
   SQL-Snapshot (`_impression_upsert`).
+- `scripts/personalization_toggle_test.py` **Block C** prüft die Einwilligung: Mit Schalter an
+  wird geschrieben. Ein `PUT` ohne das Feld oder ein erneutes `true` löscht nicht. Ein Widerruf
+  löscht nur die eigenen Zeilen, andere User behalten ihre. Danach kommt 204 und es wird nichts
+  geschrieben.

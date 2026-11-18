@@ -118,6 +118,14 @@ def post_impressions(
     db: Session = Depends(get_dp),
     current_user: int = Depends(oauth2.get_current_user),
 ):
+    
+    # Keine Einwilligung (Default) oder widerrufen -> nichts speichern.
+    # 204 statt Fehler: der Client ist fire-and-forget und würde einen 4xx
+    # sowieso ignorieren. Steht ganz oben, damit auch die 3 Kontext-Queries entfallen.
+    if not current_user.impressions_enabled:
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+    
+
     # Doppelte post_ids im Payload zusammenfassen, bevor irgendetwas anderes
     # passiert — sonst kippt weiter unten das Upsert-Statement.
     items = _merge_duplicate_items(impression_batch.items)

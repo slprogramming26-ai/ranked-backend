@@ -236,6 +236,9 @@ def get_current_user(current_user: int = Depends(oauth2.get_current_user),  db: 
             "streak_count": get_effective_streak(current_user.streak_count, current_user.last_swipe_date),
             "league": get_league(current_user.xp),
             "role": current_user.role,
+            "personalized_feed": current_user.personalized_feed,
+            "impressions_enabled": current_user.impressions_enabled,
+
             }
 
 @router.get("/search", response_model=List[schemas.GetUserOut])
@@ -416,7 +419,13 @@ def upgrade_user(user_details: schemas.UserDetails,current_user: int = Depends(o
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User doesnt exist")
     
 
-    update_data = user_details.dict(exclude_unset=True)
+    update_data = user_details.model_dump(exclude_unset=True)   # .dict() ist veraltet
+
+    # Die drei Schalter sind NOT NULL. Schickt die App explizit null, kommt das
+    # sonst als IntegrityError zurück, also 500. Deshalb: null = "nicht ändern".
+    for feld in ("ranking_enabled", "personalized_feed", "impressions_enabled"):
+        if update_data.get(feld, True) is None:
+            del update_data[feld]
 
     # Leerer Body (z.B. alter Flutter-Aufruf nur mit profile_picture_url, das Feld
     # wird inzwischen ignoriert) -> nichts zu tun. Ohne diesen Check: "UPDATE users SET  WHERE" -> 500.
@@ -432,6 +441,13 @@ def upgrade_user(user_details: schemas.UserDetails,current_user: int = Depends(o
 
     # 3. Update ausführen
     user_query.update(update_data, synchronize_session=False)
+    # Einwilligung widerrufen -> gesammelte Impressions sofort löschen (Art. 17 Abs. 1 lit. b).
+    # Gleiche Transaktion wie das Umschalten: entweder beides oder nichts.
+    if update_data.get("impressions_enabled") is False:
+        db.query(models.FeedImpression).filter(
+            models.FeedImpression.user_id == current_user.id
+        ).delete(synchronize_session=False)
+
     
     db.commit()
 

@@ -3,8 +3,9 @@
 **Code:** `app/feed.py` (die ganze Logik, Einstieg `seite_holen`), `app/routers/post.py`
 (`GET /posts/`, nur HTTP), Gewichte in `app/ranking_config.py`, Likes in `app/routers/vote.py`,
 Orte in `app/routers/location.py`
-**Tests:** `scripts/rerank_vergleich.py` (V1–V10), `scripts/feed_query_test.py` (Messung)
-**Verwandt:** [lytir.md](lytir.md)
+**Tests:** `scripts/rerank_vergleich.py` (V1–V10), `scripts/feed_query_test.py` (Messung),
+`scripts/personalization_toggle_test.py` (Personalisierung aus)
+**Verwandt:** [lytir.md](lytir.md), [tagesranking.md](tagesranking.md)
 
 ## Worum es geht
 
@@ -22,6 +23,9 @@ fertig, aber ausgeschaltet (`LYTIR_RERANK_ENABLED = False`), weil es noch kein M
 Daten gibt. Alles zu Lytir steht in [lytir.md](lytir.md). Diese Seite beschreibt beide Wege, damit
 klar ist, was sich beim Umschalten ändert.
 
+Jeder User kann die Personalisierung **abschalten** (`personalized_feed = false`). Dann fallen
+Folgen, Vibes und Lytir aus der Sortierung heraus (Abschnitt 7).
+
 ## Die Regeln auf einen Blick
 
 1. Im normalen Feed sind nur Posts der **letzten 30 Tage**. Die Suche findet auch ältere.
@@ -31,6 +35,8 @@ klar ist, was sich beim Umschalten ändert.
 5. **Eine Feed-Seite kostet eine SQL-Anweisung**, egal welcher Weg. Alles, was die App pro Post
    wissen muss, kommt als Spalte mit.
 6. Der Server rechnet die Reihenfolge. Die App schickt nur `limit`, `skip`, `search`, `local`.
+7. **Personalisierung aus** heißt: kein Follow-Bonus, kein Vibe-Bonus, kein Lytir. Filter aus
+   Meldungen und Blocks gelten weiter.
 
 ## Anfrage und Antwort (`GET /posts/`)
 
@@ -122,6 +128,22 @@ Reihenfolge: A, B, C. Post C bräuchte 36 Likes mehr, um A einzuholen.
 sobald einer meiner beiden bei einem der beiden des Autors vorkommt. Zwei Treffer geben **nicht**
 mehr als einer. Hat jemand keine Vibes gesetzt, gibt es für ihn nie einen Bonus.
 
+**Ohne Personalisierung** (Abschnitt 7) bleiben nur die ersten beiden Zeilen:
+
+```
+score = 1 × Likes − 1 × Alter in Stunden
+```
+
+Dieselben drei Posts sortieren sich dann ganz anders:
+
+| Post | Score ohne Personalisierung |
+|---|---|
+| C | 40 − 24 = **16** |
+| B | 10 − 0,5 = **9,5** |
+| A | 3 − 2 = **1** |
+
+Reihenfolge: C, B, A. Es zählt nur noch, was alle anderen auch sehen: Likes und Alter.
+
 **Das Alter rechnet die Datenbank** mit `now()`. Zwischen zwei Seiten vergeht Zeit, aber alle
 Posts altern gleich schnell. Die Reihenfolge verschiebt sich dadurch nicht, nur durch neue Posts
 und neue Likes.
@@ -134,7 +156,7 @@ Spalten** in derselben SQL-Anweisung (`_zusatz_spalten`), nicht als eigene Abfra
 | Spalte | SQL | Wofür |
 |---|---|---|
 | `is_liked` | `EXISTS` auf `votes` | Herz in der App |
-| `i_follow_owner` | `EXISTS` auf `follows` | Follow-Bonus und Lytir-Feature |
+| `i_follow_owner` | `EXISTS` auf `follows` | Follow-Bonus und Lytir-Feature (kommt auch ohne Personalisierung mit, wird dann nur nicht für den Score benutzt) |
 | `comment_count` | `count(*)` als Unterabfrage auf `comments` | Lytir-Feature |
 
 Autor und Ort hängen per `joinedload` als JOIN mit dran.
@@ -182,7 +204,7 @@ Body `{"names": ["Berlin", "Hamburg", ...]}`. Schon vorhandene Namen werden übe
 `seite_holen` entscheidet:
 
 ```
-                       Lytir an UND keine Suche?
+         Lytir an UND personalisiert UND keine Suche?
                         │                    │
                        nein                  ja
                         │                    │
@@ -190,6 +212,8 @@ Body `{"names": ["Berlin", "Hamburg", ...]}`. Schon vorhandene Namen werden übe
      SQL sortiert, SQL schneidet    150 holen, Lytir sortiert,
      mit LIMIT/OFFSET die Seite     Reihenfolge in Redis merken,
      aus. Kein Cache.               Python schneidet die Seite aus.
+     Score mit oder ohne Bonus,
+     je nach personalized_feed.
 ```
 
 Heute ist der Schalter aus, es läuft also **nur der alte Weg**. Der Rest dieses Abschnitts gilt
@@ -256,6 +280,76 @@ Wichtige Folge: **Lytir sortiert immer nur innerhalb eines Blocks von 150.** Wel
   jeder Post den Score 0. Python sortiert stabil, also bleibt die SQL-Reihenfolge. Genau das prüft
   `rerank_vergleich.py` (V1).
 
+## 7. Personalisierung abschalten (`personalized_feed`)
+
+Jeder User hat den Schalter `users.personalized_feed`, Standard **an**. Wer ihn ausschaltet,
+bekommt einen Feed, der nicht aus seinem Verhalten oder Profil vorhersagt, was ihm gefallen
+könnte.
+
+**Warum es den Schalter gibt:** Follow-Bonus, Vibe-Bonus und Lytir sind Profiling im Sinne von
+Art. 4 Nr. 4 DSGVO. Aus dem, wem ich folge und welche Vibes ich habe, wird vorhergesagt, was mich
+interessiert. Dagegen hat jeder ein Widerspruchsrecht (Art. 21). Art. 27 DSA verlangt außerdem,
+dass wir die Hauptkriterien der Sortierung offenlegen und, wo es Optionen gibt, sie bedienbar
+machen. Deshalb ist es **Opt-out**: an, bis jemand widerspricht.
+
+### Was sich ändert und was nicht
+
+| | personalisiert | aus |
+|---|---|---|
+| Follow-Bonus (+50) | ✓ | – |
+| Vibe-Bonus (+20) | ✓ | – |
+| Lytir-Rerank (wenn eingeschaltet) | ✓ | – |
+| Likes und Alter im Score | ✓ | ✓ |
+| Filter: gemeldet, Block, 30 Tage, Lokal, Suche | ✓ | ✓ |
+| `is_liked`, `i_follow_owner`, `comment_count` als Spalten | ✓ | ✓ |
+| Eine SQL-Anweisung pro Seite | ✓ | ✓ |
+
+**Warum Meldungen und Blocks bleiben:** Das ist kein Profiling. Der Server sagt dabei nichts
+voraus, er führt eine ausdrückliche Anweisung des Users aus („diesen Post / diese Person will ich
+nicht sehen“). Rechtsgrundlage ist der Vertrag (Art. 6 Abs. 1 lit. b), und Art. 21 gilt nur für
+lit. e und f. Der Follow-**Bonus** ist dagegen eine Vorhersage („wem du folgst, den willst du
+weiter oben sehen“) und fällt deshalb weg.
+
+**Der Lokal-Feed bleibt:** Den wählt der User für jede Anfrage selbst (`local=true`). Das ist
+ein Filter, den er bewusst setzt, keine Vorhersage.
+
+### Wie es im Code umgesetzt ist
+
+Es gibt **keinen dritten Code-Weg**, sondern einen Parameter: `seite_holen` liest
+`current_user.personalized_feed` und gibt ihn als `personalisiert` an `_kandidaten_holen`
+weiter. Dort entscheidet er nur, ob Follow- und Vibe-Bonus in den Score kommen. Alles andere
+(Filter, Spalten, Sortierung, LIMIT/OFFSET) ist für beide Modi derselbe Code. Bewusst so: Eine
+Kopie der Funktion hätte jeden späteren Filter doppelt gebraucht. Wird er in einer Kopie
+vergessen, sehen genau die Leute, die widersprochen haben, plötzlich Posts von Blockierten.
+
+Der Rerank-Weg ruft `_kandidaten_holen` mit `personalisiert=True` auf. Er wird nur erreicht, wenn
+`seite_holen` das vorher geprüft hat.
+
+### Setzen und lesen
+
+- **Setzen:** `PUT /users/` mit `{"personalized_feed": false}` (wie `ranking_enabled`).
+  Explizites `null` wird ignoriert und ändert nichts. Die Spalte ist `NOT NULL`, ohne diesen Filter
+  käme sonst 500.
+- **Lesen:** `GET /users/` (eigenes Profil) liefert `personalized_feed`. Bei fremden Profilen
+  und in der Suche ist das Feld `null`. Ob jemand personalisiert schaut, geht andere nichts an.
+- **Wirkt sofort:** `get_current_user` lädt die User-Zeile bei jeder Anfrage. Die nächste
+  Feed-Seite kommt schon ohne Bonus. Bewusst **kein** Redis-Cache für den Schalter: Mit einer TTL
+  würde nach dem Widerspruch noch eine Weile personalisiert.
+
+### Gilt auch fürs Tagesranking
+
+Derselbe Schalter nimmt im [Tagesranking](tagesranking.md) den Vibe- und den Orts-Bonus aus dem
+Gewicht des Targets. Die App sollte ihn deshalb nicht „Feed“ nennen, sondern etwa
+**„Personalisierte Inhalte“**.
+
+### Abgrenzung zu den Impressions
+
+Die Impressions (was ich gesehen habe, wie lange) hängen an einem **eigenen** Schalter
+`impressions_enabled`, siehe [lytir.md](lytir.md#nur-mit-einwilligung). Getrennt, weil es zwei
+verschiedene Zwecke mit verschiedenen Rechtsgrundlagen sind: Sortieren ist Opt-out (Widerspruch,
+Art. 21), Trainingsdaten sammeln ist Opt-in (Einwilligung, Art. 6 Abs. 1 lit. a). Mit einer
+einzigen Spalte ginge das nicht, weil die Standardwerte verschieden sind.
+
 ## Der Like-Zähler (`vote_count`)
 
 `posts.vote_count` ist ein mitgeschriebener Zähler ([README](../README.md), Regel 4). Er soll immer
@@ -312,6 +406,19 @@ Den Schalter legt das Skript nur in seinem eigenen Prozess um.
 | V8 | eine ID ohne Post im Cache fällt heraus |
 | V9 | Redis kaputt: richtige Seiten trotzdem |
 | V10 | echtes (simuliertes) Modell: sortiert nach Score, 1 Anweisung, Zeitmessung |
+
+`scripts/personalization_toggle_test.py` (gegen die echte DB, wird zurückgerollt, kein Redis)
+prüft den Schalter aus Abschnitt 7. Die Feed-Posts bekommen einen zufälligen Tag im Titel und
+werden über `search` gesucht, damit echte Posts den Vergleich nicht stören.
+
+| | Prüft |
+|---|---|
+| A | Standardwerte (`personalized_feed` an, `impressions_enabled` aus), fremde Profile zeigen beides nicht |
+| B | Setzen per `PUT /users/`, explizites `null` ändert nichts und gibt keinen 500 |
+| C | Impressions: siehe [lytir.md](lytir.md#was-der-test-prüft) |
+| D | gleiche Posts, personalisiert: Gefolgter mit gleichem Vibe vorn; aus: mehr Likes vorn; Block-Filter in beiden Modi; `i_follow_owner` bleibt |
+| E | `seite_holen` nimmt den Rerank-Weg nur bei Lytir an **und** personalisiert **und** ohne Suche |
+| F | Tagesranking-Gewicht, siehe [tagesranking.md](tagesranking.md) |
 
 `scripts/feed_query_test.py` misst, wie viele Anweisungen ein Feed-Abruf braucht und wie sich die
 Zeit auf Datenbank und Python verteilt. Zeigt sich dort eine Anweisung 150-mal, ist ein N+1

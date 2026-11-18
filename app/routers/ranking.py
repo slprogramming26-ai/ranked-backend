@@ -266,13 +266,16 @@ def _target_gewicht(kandidat, current_user):
     """Wie gross die Chance dieses Kandidaten ist. Wird nie 0: Jeder behaelt eine Chance."""
     gewicht = 1
 
-    meine_vibes = {current_user.vibe_factor_1, current_user.vibe_factor_2} - {None}
-    kandidat_vibes = {kandidat.vibe_factor_1, kandidat.vibe_factor_2}
-    if meine_vibes & kandidat_vibes:
-        gewicht += TARGET_VIBE_BONUS
+    # Art. 21: ohne Personalisierung keine Bevorzugung nach Vibes oder Ort.
+    # Dann startet jeder Kandidat mit Gewicht 1 -> reiner Zufall plus die Fairness-Teile unten.
+    if current_user.personalized_feed:
+        meine_vibes = {current_user.vibe_factor_1, current_user.vibe_factor_2} - {None}
+        kandidat_vibes = {kandidat.vibe_factor_1, kandidat.vibe_factor_2}
+        if meine_vibes & kandidat_vibes:
+            gewicht += TARGET_VIBE_BONUS
 
-    if current_user.location_id is not None and kandidat.location_id == current_user.location_id:
-        gewicht += TARGET_LOCATION_BONUS
+        if current_user.location_id is not None and kandidat.location_id == current_user.location_id:
+            gewicht += TARGET_LOCATION_BONUS
 
     # Wer heute schon oft gezogen wurde, kommt seltener: schuetzt das Leaderboard.
     gewicht = gewicht / (1 + kandidat.heute_gezogen)

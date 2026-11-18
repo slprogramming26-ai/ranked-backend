@@ -132,7 +132,9 @@ def _kandidaten_holen(db: Session,
                       limit: int,
                       offset: int,
                       search: Optional[str],
-                      local: bool):
+                      local: bool,
+                      personalisiert: bool
+                      ):
 
 
     
@@ -147,29 +149,26 @@ def _kandidaten_holen(db: Session,
         # Geschrieben wird er atomar in vote.py, die votes-Tabelle bleibt Quelle der Wahrheit.
     vote_count = models.Post.vote_count
     age_hours = func.extract('epoch', func.now() - models.Post.created_at) / 3600
-    
-    follow_bonus = case((i_follow_owner, FEED_FOLLOW_BONUS), else_=0)
-    my_vibes = [current_user.vibe_factor_1, current_user.vibe_factor_2]
-    
-    same_vibes = db.query(models.User).filter(
-        models.User.id == models.Post.owner_id,
-        or_(
-            models.User.vibe_factor_1.in_(my_vibes),
-            models.User.vibe_factor_2.in_(my_vibes),
-        ),
-        ).exists()
-    
-    category_bonus = case((same_vibes, FEED_VIBE_BONUS), else_=0)
-    
+
     score = FEED_VOTE_WEIGHT * vote_count \
-            - FEED_AGE_PENALTY_PER_HOUR * age_hours \
-            + follow_bonus \
-            + category_bonus
+            - FEED_AGE_PENALTY_PER_HOUR * age_hours
+
+    # Art. 21: wer widersprochen hat, bekommt keine Vorhersage aus Follows/Vibes.
+    # Block-/Report-Filter oben bleiben: das sind Anweisungen des Users, kein Profiling.
+    if personalisiert:
+        follow_bonus = case((i_follow_owner, FEED_FOLLOW_BONUS), else_=0)
+        my_vibes = [current_user.vibe_factor_1, current_user.vibe_factor_2]
+        same_vibes = db.query(models.User).filter(
+            models.User.id == models.Post.owner_id,
+            or_(
+                models.User.vibe_factor_1.in_(my_vibes),
+                models.User.vibe_factor_2.in_(my_vibes),
+            ),
+        ).exists()
+        category_bonus = case((same_vibes, FEED_VIBE_BONUS), else_=0)
+        score = score + follow_bonus + category_bonus
     
-    
-    
-    
-    
+
     posts_query = db.query(models.Post) \
     .filter(models.Post.title.contains(search)) \
     .filter(~ich_habe_gemeldet) \
@@ -301,6 +300,8 @@ def _reihenfolge_fuellen(db: Session,
             offset=len(reihenfolge),
             search="",
             local=local,
+            personalisiert=True,   # wir sind nur hier, wenn seite_holen das geprüft hat
+
         )
         sortiert = _rerank(fenster, current_user)
 
@@ -393,8 +394,11 @@ def seite_holen(db: Session,
     - Rerank (Schalter an, keine Suche): 150 Kandidaten holen, Lytir
       sortiert, Python schneidet die Seite aus.
     - Alt (Schalter aus ODER Suche): SQL sortiert, SQL schneidet.
+    Ohne Personalisierung: wie Alt, aber ohne Follow- und Vibe-Bonus.
     """
-    if LYTIR_RERANK_ENABLED and not search:
+    personalisiert = current_user.personalized_feed
+
+    if LYTIR_RERANK_ENABLED and personalisiert and not search:
         return _feed_mit_rerank(
             db, current_user,
             limit=limit,
@@ -408,5 +412,7 @@ def seite_holen(db: Session,
         offset=skip,
         search=search,
         local=local,
+        personalisiert=personalisiert,
     )
+
 

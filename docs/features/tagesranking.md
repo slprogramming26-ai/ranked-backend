@@ -90,6 +90,13 @@ Gewicht = Gewicht × 0,2   wenn er in den letzten 14 Tagen schon mein Target war
 
 Der Vibe-Bonus gibt es **einmal**, auch wenn beide Vibes passen.
 
+**Ohne Personalisierung** (`personalized_feed = false`, siehe
+[feed.md, Abschnitt 7](feed.md#7-personalisierung-abschalten-personalized_feed)) fallen Vibe-
+und Orts-Bonus weg. Jeder Kandidat startet dann mit Gewicht 1. Die beiden Fairness-Teile
+(„heute schon gezogen“, „kürzlich mein Target“) bleiben. Sie schützen andere User und sagen
+nichts über meine Vorlieben voraus. Auch die Regel „Gefolgte nur in der Notlösung“ bleibt: Sie
+schließt aus, sie bevorzugt niemanden nach Ähnlichkeit.
+
 **Beispiel.** Ich habe die Vibes „Sport“ und „Musik“ und wohne in Berlin. Vier Kandidaten:
 
 | Kandidat | Was zutrifft | Rechnung | Gewicht | Chance |
@@ -314,3 +321,6 @@ Supabase-Vault als `ranking_job_secret`), nicht mit Login. Er vergibt die Platzi
 - Gewichtung: Mit vielen Ziehungen im Speicher wird geprüft, dass Vibe und Ort öfter, „heute
   oft gezogen“ und „kürzlich Target“ seltener drankommen.
 - Nie mehr als 20 Posts.
+
+Ob die Boni ohne Personalisierung wegfallen, prüft `scripts/personalization_toggle_test.py`
+(Block F).
