@@ -109,8 +109,9 @@ Unbekannte Felder sind **verboten** (`extra="forbid"`), `message` ist 1–4096 Z
 ```
 
 `client_msg_id` ist optional, aber der Client **soll** sie schicken: sie ist der
-Duplikat-Schutz bei Reconnect-Rennen und erlaubt ihm, seine eigene Zeile beim späteren
-REST-Sync wiederzuerkennen.
+Duplikat-Schutz bei Reconnect-Rennen, erlaubt ihm, seine eigene Zeile beim späteren
+REST-Sync wiederzuerkennen, und ist die Sendungsnummer, mit der er jede Antwort seiner
+Nachricht zuordnet (§ 4.3.1).
 
 ### 4.3 Go → Client
 
@@ -118,7 +119,7 @@ Fünf Arten, alle über das Feld `kind` unterscheidbar:
 
 ```jsonc
 // Bestätigung an den SENDER (Antwort auf B)
-{ "kind": "ack", "to": 14, "delivered_live": 1 }
+{ "kind": "ack", "to": 14, "delivered_live": 1, "client_msg_id": "uuid" }
 
 // Eingehende DM an den EMPFÄNGER (aus C)
 { "kind": "dm", "sender_id": 2, "message": "...",
@@ -129,13 +130,13 @@ Fünf Arten, alle über das Feld `kind` unterscheidbar:
   "created_at": "...", "key_version": 1, "client_msg_id": "uuid" }
 
 // Auftrag: neuen Gruppenschlüssel erzeugen + verteilen, dann erneut senden
-{ "kind": "rekey_required", "group_chat_id": 2 }
+{ "kind": "rekey_required", "group_chat_id": 2, "client_msg_id": "uuid" }
 
 // Auftrag: aktuellen Schlüssel holen, neu verschlüsseln, erneut senden
-{ "kind": "key_outdated", "group_chat_id": 2, "current_version": 1 }
+{ "kind": "key_outdated", "group_chat_id": 2, "current_version": 1, "client_msg_id": "uuid" }
 
-// Fachlicher Fehler (blockiert, kein Mitglied, Gruppe existiert nicht, ...)
-{ "kind": "error", "detail": "..." }
+// Fehler (fachlich aus Python oder Störung aus Go, siehe § 4.3.2)
+{ "kind": "error", "detail": "...", "retryable": false, "client_msg_id": "uuid" }
 ```
 
 `delivered_live` = Anzahl der Empfänger mit offener Verbindung im Moment des Sendens
@@ -147,12 +148,66 @@ holt die Nachricht per `GET /messages?since=` nach.
 > erneuern — und dann kann er in dieser Gruppe **nie wieder senden**. In Python erben beide
 > von `ChatError`, sie müssen also *vor* dem generischen `except` gefangen werden.
 
+#### 4.3.1 `client_msg_id` in Antworten
+
+Jede Antwort an den Sender (`ack`, `error`, `rekey_required`, `key_outdated`) trägt die
+`client_msg_id` der Nachricht, auf die sie antwortet. Damit kann der Client eine Outbox
+führen (wartend → gesendet / fehlgeschlagen), ohne sich auf die Reihenfolge der Antworten
+verlassen zu müssen.
+
+Das Feld ist `null` oder **fehlt**, wenn die ID unbekannt ist: der Client hat keine
+geschickt (Python antwortet dann mit `null`), oder Go konnte die Nachricht gar nicht lesen
+(Formfehler, das Feld fehlt). Der Client behandelt beides gleich.
+
+Eingehende `dm`/`group` an Empfänger tragen die `client_msg_id` des *Absenders* — das ist
+etwas anderes und hat mit der eigenen Outbox nichts zu tun.
+
+#### 4.3.2 `retryable` bei `error`
+
+`retryable` sagt, ob der Client **dieselbe Nachricht mit derselben `client_msg_id`** später
+erneut senden darf. Dieselbe ID ist Pflicht — nur so erkennt Python ein Duplikat, falls die
+erste Nachricht doch schon gespeichert war.
+
+| Quelle | `detail` (Beispiele) | `retryable` | `client_msg_id` |
+|---|---|---|---|
+| Python | blockiert, kein Mitglied, Gruppe existiert nicht, Speichern fehlgeschlagen | `false` | ja |
+| Go | `rate limit exceeded` | `true` | ja |
+| Go | `backend unavailable` (Python nicht erreichbar, Timeout, Nicht-200) | `true` | ja |
+| Go | Formfehler (kaputtes JSON, `message` zu lang, unbekanntes Feld, ...) | `false` | fehlt |
+
+Python-Fehler sind **immer** endgültig: vorübergehende Störungen kommen dort nie als
+`error` an, sondern enden als Nicht-200 und werden in Go zu `backend unavailable`.
+Formfehler sind Programmierfehler im Client und sollen vor dem Senden abgefangen werden
+(insbesondere die Länge von `message`, § 5.2).
+
+`rekey_required` und `key_outdated` haben kein `retryable` — sie sind Aufträge (siehe oben)
+und enden immer mit einem erneuten Senden, ebenfalls mit **derselben** `client_msg_id`.
+
+#### 4.3.3 Bekannte Lücke: Retry nach Block oder Rauswurf
+
+Python prüft Block, Mitgliedschaft und Schlüsselversion **vor** dem Speichern; ein Duplikat
+fällt erst **beim** Speichern auf (Unique-Index `sender_id, client_msg_id`). Szenario:
+
+1. Nachricht wird gespeichert, das `ack` geht aber verloren (Verbindungsabbruch).
+2. In diesem Moment blockiert der Empfänger den Sender bzw. wirft ihn aus der Gruppe.
+3. Der Client sendet nach dem Reconnect erneut mit derselben ID.
+
+→ Antwort ist `error` (`retryable: false`), obwohl die Nachricht **gespeichert ist**. Der
+Client zeigt sie als fehlgeschlagen; beim nächsten REST-Sync taucht sie trotzdem als
+gesendet auf. Bei einer neuen Schlüsselversion dazwischen passiert das nicht: `key_outdated`
+→ neu verschlüsseln → erneut senden → Duplikat erkannt → `ack`.
+
+**Bewusst nicht behoben:** Der Fix wäre ein Duplikat-Lookup vor den Prüfungen — eine
+zusätzliche DB-Abfrage bei **jeder** Nachricht für einen Fall, der Abbruch und Block im
+selben Moment braucht. Der Schaden ist nur eine falsche ❗-Anzeige, keine verlorene oder
+doppelte Nachricht.
+
 ### 4.4 Die Antwortregel
 
 **Auf jede Client-Nachricht folgt genau eine Antwort** — `ack`, `error`, `rekey_required`
 oder `key_outdated`. Nie keine. Ein Client, der auf eine Antwort wartet, die nie kommt,
 hängt; das ist schlimmer als ein Fehler. Auch wenn Go intern stolpert (Python nicht
-erreichbar, unerwarteter Statuscode), schickt es `{"kind": "error", ...}`.
+erreichbar, unerwarteter Statuscode), schickt es `{"kind": "error", "retryable": true, ...}`.
 
 ---
 

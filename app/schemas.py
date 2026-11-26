@@ -615,6 +615,7 @@ class ChatAck(BaseModel):
     kind: Literal["ack"] = "ack"
     to: int  # user_id (bei DM) oder group_chat_id (bei group)
     delivered_live: int
+    client_msg_id: Optional[str] = None
 
 
 class GroupChatCreate(BaseModel):

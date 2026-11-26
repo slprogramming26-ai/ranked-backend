@@ -8,9 +8,10 @@ Zwei getrennte Bremsen, die nichts miteinander zu tun haben:
   2. Verbindungen -- ein Token-Bucket je IP (10/s, Burst 30), geprueft VOR dem
      HTTP-Upgrade. Wer zu schnell verbindet, bekommt HTTP 429.
 
-TRICK, der diesen Test billig macht: Go prueft das Nachrichten-Limit VOR
-parseClientMessage. Eine formal kaputte Nachricht kostet also eine Marke, kommt
-aber nie bei Python an. Fast alle Faelle hier schicken deshalb Muell -- das
+TRICK, der diesen Test billig macht: Das Nachrichten-Limit gilt fuer ALLE
+Nachrichten, auch formal kaputte (seit 2026-11-25 wird zwar vorher geparst, um
+die client_msg_id zu kennen, der Formfehler geht aber erst NACH dem Limiter
+raus). Eine kaputte Nachricht kostet also eine Marke, kommt aber nie bei Python an. Fast alle Faelle hier schicken deshalb Muell -- das
 Limit wird exakt so belastet wie von echten Nachrichten, aber es entsteht KEINE
 einzige DB-Zeile. Nur Test 1 schickt drei echte DMs (Sender 2 -> Lama 14), damit
 auch bewiesen ist, dass normales Tippen ungebremst durchgeht.

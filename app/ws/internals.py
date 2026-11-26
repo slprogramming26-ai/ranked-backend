@@ -72,6 +72,20 @@ def _db_scope():
     finally:
         db.close()
 
+
+def _error(detail: str, client_msg_id: Optional[str]) -> dict:
+    """Fachlicher Fehler aus Python. Immer retryable=False: alles, was hier
+    landet (blockiert, kein Mitglied, ...), wird durch Wiederholen nicht besser.
+    Vorübergehende Störungen kommen nie hier an — die enden als Nicht-200
+    und Go antwortet mit 'backend unavailable', retryable=True."""
+    return {
+        "kind": "error",
+        "detail": detail,
+        "retryable": False,
+        "client_msg_id": client_msg_id,
+    }
+
+
 @router.post("/dm")
 def push_dm(incoming: InternalDmIn) -> dict:
     """Antwort = wörtlich das JSON, das Go dem Sender zurückreicht."""
@@ -85,13 +99,13 @@ def push_dm(incoming: InternalDmIn) -> dict:
                 client_msg_id=incoming.client_msg_id,
             )
         except ChatError as e:
-            return {"kind": "error", "detail": str(e)}
+            return _error(str(e), incoming.client_msg_id)
 
 
     # Duplikat (Reconnect-Race): steht schon in der DB und wurde ggf. schon
     # gepusht -> kein zweiter Push, nur das Ack.
     if not is_new:
-        return schemas.ChatAck(to=incoming.to, delivered_live=0).model_dump(mode="json")
+        return schemas.ChatAck(to=incoming.to, delivered_live=0, client_msg_id=incoming.client_msg_id).model_dump(mode="json")
 
     out = schemas.ChatMessageOut(
         sender_id=incoming.sender_id,
@@ -102,7 +116,7 @@ def push_dm(incoming: InternalDmIn) -> dict:
     publisher.push([incoming.to], out.model_dump(mode="json"))
 
     delivered_live = 1 if presence.is_online(incoming.to) else 0
-    return schemas.ChatAck(to=incoming.to, delivered_live=delivered_live).model_dump(mode="json")
+    return schemas.ChatAck(to=incoming.to, delivered_live=delivered_live, client_msg_id=incoming.client_msg_id).model_dump(mode="json")
 
 
 
@@ -121,15 +135,20 @@ def push_group(incoming: InternalGroupIn) -> dict:
             )
         # Reihenfolge wichtig: die Spezialfaelle VOR dem generischen ChatError.
         except RekeyRequired:
-            return {"kind": "rekey_required", "group_chat_id": incoming.to}
+            return {
+                "kind": "rekey_required",
+                "group_chat_id": incoming.to,
+                "client_msg_id": incoming.client_msg_id,
+            }
         except KeyOutdated as e:
             return {
                 "kind": "key_outdated",
                 "group_chat_id": incoming.to,
                 "current_version": e.current_version,
+                "client_msg_id": incoming.client_msg_id,
             }
         except ChatError as e:
-            return {"kind": "error", "detail": str(e)}
+            return _error(str(e), incoming.client_msg_id)
 
     out = schemas.GroupChatMessageOut(
         group_chat_id=incoming.to,
@@ -142,6 +161,6 @@ def push_group(incoming: InternalGroupIn) -> dict:
     publisher.push(recipient_ids, out.model_dump(mode="json"))
 
     delivered_live = len(presence.online_user_ids(recipient_ids))
-    return schemas.ChatAck(to=incoming.to, delivered_live=delivered_live).model_dump(mode="json")
+    return schemas.ChatAck(to=incoming.to, delivered_live=delivered_live, client_msg_id=incoming.client_msg_id).model_dump(mode="json")
 
 
